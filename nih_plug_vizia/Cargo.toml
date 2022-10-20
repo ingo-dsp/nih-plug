@@ -11,7 +11,7 @@ description = "An adapter to use VIZIA GUIs with NIH-plug"
 nih_plug = { path = ".." }
 nih_plug_assets = { git = "https://github.com/robbert-vdh/nih_plug_assets.git" }
 
-baseview = { git = "https://github.com/robbert-vdh/baseview.git", branch = "feature/resize" }
+baseview = { git = "https://github.com/ingo-dsp/baseview.git", branch = "develop-ingo" }
 crossbeam = "0.8"
 # To make the state persistable
 serde = { version = "1.0", features = ["derive"] }
