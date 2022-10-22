@@ -102,7 +102,7 @@ assert_no_alloc = { git = "https://github.com/robbert-vdh/rust-assert-no-alloc.g
 # Used for the `standalone` feature
 # NOTE: OpenGL support is not needed here, but rust-analyzer gets confused when
 #       some crates do use it and others don't
-baseview = { git = "https://github.com/ingo-dsp/baseview.git", branch = "develop-ingo", features = ["opengl"], optional = true }
+baseview = { git = "https://github.com/ingo-dsp/baseview.git", branch = "develop-ingo", features = ["opengl", "enforce_user_wnd_proc"], optional = true }
 # All the claps!
 clap = { version = "3.2", features = ["derive"], optional = true }
 cpal = { version = "0.13.5", optional = true }
