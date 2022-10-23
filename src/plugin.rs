@@ -269,6 +269,7 @@ pub trait Editor: Send + Sync {
         &self,
         parent: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
+        request_keyboard_focus: bool,
     ) -> Box<dyn Any + Send + Sync>;
 
     /// Returns the (current) size of the editor in pixels as a `(width, height)` pair. This size

@@ -287,6 +287,7 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
                                 handle: window.raw_window_handle(),
                             },
                             context,
+                            true
                         );
 
                         WrapperWindowHandler {

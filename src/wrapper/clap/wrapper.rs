@@ -2779,6 +2779,7 @@ impl<P: ClapPlugin> Wrapper<P> {
                 *editor_handle = Some(wrapper.editor.as_ref().unwrap().spawn(
                     ParentWindowHandle { handle },
                     wrapper.clone().make_gui_context(),
+                    false
                 ));
 
                 true

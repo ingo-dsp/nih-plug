@@ -166,6 +166,7 @@ where
         &self,
         parent: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
+        request_keyboard_focus: bool
     ) -> Box<dyn std::any::Any + Send + Sync> {
         let update = self.update.clone();
         let state = self.user_state.clone();
@@ -173,7 +174,7 @@ where
 
         let (unscaled_width, unscaled_height) = self.egui_state.size();
         let scaling_factor = self.scaling_factor.load();
-        let window = EguiWindow::open_parented(
+        let mut window = EguiWindow::open_parented(
             &parent,
             WindowOpenOptions {
                 title: String::from("egui window"),
@@ -222,6 +223,10 @@ where
                 (update)(egui_ctx, &setter, &mut state.write());
             },
         );
+
+        if request_keyboard_focus {
+            window.request_keyboard_focus();
+        }
 
         self.egui_state.open.store(true, Ordering::Release);
         Box::new(EguiEditorHandle {
