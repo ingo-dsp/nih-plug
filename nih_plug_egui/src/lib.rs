@@ -25,6 +25,7 @@ compile_error!("There's currently no software rendering support for egui");
 
 /// Re-export for convenience.
 pub use egui;
+use nih_plug::plugin::SpawnedWindow;
 
 pub mod widgets;
 
@@ -167,7 +168,7 @@ where
         parent: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
         request_keyboard_focus: bool
-    ) -> Box<dyn std::any::Any + Send + Sync> {
+    ) -> Box<dyn SpawnedWindow + Send + Sync> {
         let update = self.update.clone();
         let state = self.user_state.clone();
         let plugin_keyboard_events = self.plugin_keyboard_events.clone();
@@ -364,6 +365,11 @@ impl EguiKeyboardInput {
 struct EguiEditorHandle {
     egui_state: Arc<EguiState>,
     window: WindowHandle,
+}
+impl SpawnedWindow for EguiEditorHandle {
+    fn resize(&self, size: Size) {
+        self.window.resize(size);
+    }
 }
 
 /// The window handle enum stored within 'WindowHandle' contains raw pointers. Is there a way around

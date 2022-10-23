@@ -19,7 +19,7 @@ use crate::param::internals::{ParamPtr, Params};
 use crate::param::ParamFlags;
 use crate::plugin::{
     AuxiliaryBuffers, AuxiliaryIOConfig, BufferConfig, BusConfig, Editor, ParentWindowHandle,
-    Plugin, ProcessMode, ProcessStatus,
+    Plugin, ProcessMode, ProcessStatus, SpawnedWindow,
 };
 use crate::util::permit_alloc;
 use crate::wrapper::state::{self, PluginState};
@@ -87,7 +87,7 @@ pub enum WrapperError {
 struct WrapperWindowHandler {
     /// The editor handle for the plugin's open editor. The editor should clean itself up when it
     /// gets dropped.
-    _editor_handle: Box<dyn Any>,
+    editor_handle: Box<dyn SpawnedWindow>,
 
     /// This is used to communicate with the wrapper from the audio thread and from within the
     /// baseview window handler on the GUI thread.
@@ -291,7 +291,7 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
                         );
 
                         WrapperWindowHandler {
-                            _editor_handle: editor_handle,
+                            editor_handle,
                             gui_task_receiver,
                         }
                     },

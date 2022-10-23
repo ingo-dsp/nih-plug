@@ -2,6 +2,7 @@ use atomic_float::AtomicF32;
 use parking_lot::RwLock;
 use raw_window_handle::RawWindowHandle;
 use std::any::Any;
+use std::borrow::Borrow;
 use std::ffi::{c_void, CStr};
 use std::mem;
 use std::sync::atomic::Ordering;
@@ -11,10 +12,11 @@ use vst3_sys::gui::{IPlugFrame, IPlugView, IPlugViewContentScaleSupport, ViewRec
 use vst3_sys::utils::SharedVstPtr;
 use vst3_sys::VST3;
 use keyboard_types::KeyState;
+use baseview::Size;
 
 use super::inner::{Task, WrapperInner};
 use super::util::{ObjectPtr, VstPtr};
-use crate::plugin::{Editor, ParentWindowHandle, Vst3Plugin};
+use crate::plugin::{Editor, ParentWindowHandle, SpawnedWindow, Vst3Plugin};
 use crate::wrapper::vst3::keyboard::create_vst_keyboard_event;
 
 // Alias needed for the VST3 attribute macro
@@ -55,7 +57,7 @@ struct RunLoopEventHandlerWrapper<P: Vst3Plugin>(std::marker::PhantomData<P>);
 pub(crate) struct WrapperView<P: Vst3Plugin> {
     inner: Arc<WrapperInner<P>>,
     editor: Arc<dyn Editor>,
-    editor_handle: RwLock<Option<Box<dyn Any>>>,
+    editor_handle: RwLock<Option<Box<dyn SpawnedWindow>>>,
 
     /// The `IPlugFrame` instance passed by the host during [IPlugView::set_frame()].
     plug_frame: RwLock<Option<VstPtr<dyn IPlugFrame>>>,
@@ -393,21 +395,24 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
     unsafe fn on_size(&self, new_size: *mut ViewRect) -> tresult {
         check_null_ptr!(new_size);
 
-        // TODO: Implement Host->Plugin resizing
-        let (unscaled_width, unscaled_height) = self.editor.size();
-        let scaling_factor = self.scaling_factor.load(Ordering::Relaxed);
-        let (editor_width, editor_height) = (
-            (unscaled_width as f32 * scaling_factor).round() as i32,
-            (unscaled_height as f32 * scaling_factor).round() as i32,
-        );
-
         let width = (*new_size).right - (*new_size).left;
         let height = (*new_size).bottom - (*new_size).top;
-        if width == editor_width && height == editor_height {
-            kResultOk
-        } else {
-            kResultFalse
+
+        let scaling_factor = self.scaling_factor.load(Ordering::Relaxed);
+
+        let (editor_width, editor_height) = (
+            (width as f32 / scaling_factor) as f64,
+            (height as f32 / scaling_factor) as f64,
+        );
+
+        // Host->Plugin resizing
+        if let Some(x) = self.editor_handle.try_write() {
+            if let Some(x) = &*x {
+                x.resize(Size { width: editor_width, height: editor_height });
+            }
         }
+
+        kResultOk
     }
 
     unsafe fn on_focus(&self, _state: TBool) -> tresult {
@@ -442,14 +447,13 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
     }
 
     unsafe fn can_resize(&self) -> tresult {
-        // TODO: Implement Host->Plugin resizing
-        kResultFalse
+        kResultTrue
     }
 
     unsafe fn check_size_constraint(&self, rect: *mut ViewRect) -> tresult {
         check_null_ptr!(rect);
 
-        // TODO: Implement Host->Plugin resizing
+        // Host->Plugin resizing
         if (*rect).right - (*rect).left > 0 && (*rect).bottom - (*rect).top > 0 {
             kResultOk
         } else {

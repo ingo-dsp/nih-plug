@@ -3,6 +3,7 @@
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 use std::any::Any;
 use std::sync::Arc;
+use baseview::Size;
 
 use crate::buffer::Buffer;
 use crate::context::{GuiContext, InitContext, ProcessContext};
@@ -270,7 +271,7 @@ pub trait Editor: Send + Sync {
         parent: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
         request_keyboard_focus: bool,
-    ) -> Box<dyn Any + Send + Sync>;
+    ) -> Box<dyn SpawnedWindow + Send + Sync>;
 
     /// Returns the (current) size of the editor in pixels as a `(width, height)` pair. This size
     /// must be reported in _logical pixels_, i.e. the size before being multiplied by the DPI
@@ -307,6 +308,11 @@ pub trait Editor: Send + Sync {
     //       tick function. If it does not, then the Editor implementation must handle this by
     //       itself. This would also need an associated `PREFERRED_FRAME_RATE` constant.
     // TODO: Host->Plugin resizing
+}
+
+
+pub trait SpawnedWindow {
+    fn resize(&self, size: Size);
 }
 
 /// A raw window handle for platform and GUI framework agnostic editors.

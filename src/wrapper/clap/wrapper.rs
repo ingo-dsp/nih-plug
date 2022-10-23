@@ -84,7 +84,7 @@ use crate::param::internals::{ParamPtr, Params};
 use crate::param::ParamFlags;
 use crate::plugin::{
     AuxiliaryBuffers, BufferConfig, BusConfig, ClapPlugin, Editor, ParentWindowHandle, ProcessMode,
-    ProcessStatus,
+    ProcessStatus, SpawnedWindow,
 };
 use crate::util::permit_alloc;
 use crate::wrapper::clap::util::{read_stream, write_stream};
@@ -115,7 +115,7 @@ pub struct Wrapper<P: ClapPlugin> {
     editor: Option<Box<dyn Editor>>,
     /// A handle for the currently active editor instance. The plugin should implement `Drop` on
     /// this handle for its closing behavior.
-    editor_handle: RwLock<Option<Box<dyn Any + Send + Sync>>>,
+    editor_handle: RwLock<Option<Box<dyn SpawnedWindow + Send + Sync>>>,
     /// The DPI scaling factor as passed to the [IPlugViewContentScaleSupport::set_scale_factor()]
     /// function. Defaults to 1.0, and will be kept there on macOS. When reporting and handling size
     /// the sizes communicated to and from the DAW should be scaled by this factor since NIH-plug's
