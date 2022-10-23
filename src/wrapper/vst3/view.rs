@@ -6,14 +6,16 @@ use std::ffi::{c_void, CStr};
 use std::mem;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use vst3_sys::base::{kInvalidArgument, kResultFalse, kResultOk, tresult, TBool};
+use vst3_sys::base::{kInvalidArgument, kResultFalse, kResultOk, tresult, TBool, kResultTrue};
 use vst3_sys::gui::{IPlugFrame, IPlugView, IPlugViewContentScaleSupport, ViewRect};
 use vst3_sys::utils::SharedVstPtr;
 use vst3_sys::VST3;
+use keyboard_types::KeyState;
 
 use super::inner::{Task, WrapperInner};
 use super::util::{ObjectPtr, VstPtr};
 use crate::plugin::{Editor, ParentWindowHandle, Vst3Plugin};
+use crate::wrapper::vst3::keyboard::create_vst_keyboard_event;
 
 // Alias needed for the VST3 attribute macro
 use vst3_sys as vst3_com;
@@ -350,22 +352,22 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
         kResultOk
     }
 
-    unsafe fn on_key_down(
-        &self,
-        _key: vst3_sys::base::char16,
-        _key_code: i16,
-        _modifiers: i16,
-    ) -> tresult {
-        kResultOk
+    unsafe fn on_key_down(&self, key: vst3_sys::base::char16, key_code: i16, modifiers: i16) -> tresult {
+        if let Ok(event) = create_vst_keyboard_event(key, key_code, modifiers, KeyState::Down) {
+            if self.editor.on_key_down(&event) {
+                return kResultTrue;
+            }
+        }
+        kResultFalse
     }
 
-    unsafe fn on_key_up(
-        &self,
-        _key: vst3_sys::base::char16,
-        _key_code: i16,
-        _modifiers: i16,
-    ) -> tresult {
-        kResultOk
+    unsafe fn on_key_up(&self, key: vst3_sys::base::char16, key_code: i16, modifiers: i16) -> tresult {
+        if let Ok(event) = create_vst_keyboard_event(key, key_code, modifiers, KeyState::Up) {
+            if self.editor.on_key_up(&event) {
+                return kResultTrue;
+            }
+        }
+        kResultFalse
     }
 
     unsafe fn get_size(&self, size: *mut ViewRect) -> tresult {

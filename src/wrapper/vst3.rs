@@ -8,6 +8,7 @@ mod note_expressions;
 mod param_units;
 mod view;
 mod wrapper;
+pub mod keyboard;
 
 /// Re-export for the wrapper.
 pub use factory::Factory;

@@ -5,17 +5,20 @@
 // See the comment in the main `nih_plug` crate
 #![allow(clippy::type_complexity)]
 
+use std::borrow::{Borrow, BorrowMut};
+use std::ops::{Deref, DerefMut};
 use baseview::gl::GlConfig;
 use baseview::{Size, WindowHandle, WindowOpenOptions, WindowScalePolicy};
 use crossbeam::atomic::AtomicCell;
-use egui::Context;
-use egui_baseview::EguiWindow;
+use egui::{Context, Event, Key, Modifiers, RawInput, Vec2};
+use egui_baseview::{EguiWindow, is_copy_command, is_cut_command, is_paste_command, translate_virtual_key_code};
 use nih_plug::param::internals::PersistentField;
 use nih_plug::prelude::{Editor, GuiContext, ParamSetter, ParentWindowHandle};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use copypasta::ClipboardProvider;
 
 #[cfg(not(feature = "opengl"))]
 compile_error!("There's currently no software rendering support for egui");
@@ -56,9 +59,32 @@ where
         scaling_factor: AtomicCell::new(None),
         #[cfg(not(target_os = "macos"))]
         scaling_factor: AtomicCell::new(Some(1.0)),
+        plugin_keyboard_events: Arc::new(Mutex::new(vec![])),
+
+        clipboard_ctx: Arc::new(Mutex::new(match copypasta::ClipboardContext::new() {
+            Ok(clipboard_ctx) => Some(clipboard_ctx),
+            Err(e) => {
+                eprintln!("Failed to initialize clipboard: {}", e);
+                None
+            }
+        })),
     }))
 }
 
+#[derive(Clone)]
+pub enum AcceptableKeys {
+    All,
+    None,
+}
+impl Default for AcceptableKeys { fn default() -> Self { AcceptableKeys::None } }
+impl AcceptableKeys {
+    pub fn accepts(&self, _key: &keyboard_types::Key) -> bool {
+        match self {
+            AcceptableKeys::All => true,
+            AcceptableKeys::None => false
+        }
+    }
+}
 /// State for an `nih_plug_egui` editor.
 #[derive(Serialize, Deserialize)]
 pub struct EguiState {
@@ -68,6 +94,9 @@ pub struct EguiState {
     /// Whether the editor's window is currently open.
     #[serde(skip)]
     open: AtomicBool,
+
+    #[serde(skip)]
+    acceptable_keys: Arc<Mutex<AcceptableKeys>>,
 }
 
 impl<'a> PersistentField<'a, EguiState> for Arc<EguiState> {
@@ -90,6 +119,7 @@ impl EguiState {
         Arc::new(EguiState {
             size: AtomicCell::new((width, height)),
             open: AtomicBool::new(false),
+            acceptable_keys: Default::default()
         })
     }
 
@@ -102,6 +132,11 @@ impl EguiState {
     // Called `is_open()` instead of `open()` to avoid the ambiguity.
     pub fn is_open(&self) -> bool {
         self.open.load(Ordering::Acquire)
+    }
+
+    pub fn set_acceptable_keys(&self, acceptable_keys: AcceptableKeys) -> Result<(), ()> {
+        *self.acceptable_keys.try_lock().map_err(|_| ())? = acceptable_keys;
+        Ok(())
     }
 }
 
@@ -116,6 +151,11 @@ struct EguiEditor<T> {
     /// The scaling factor reported by the host, if any. On macOS this will never be set and we
     /// should use the system scaling factor instead.
     scaling_factor: AtomicCell<Option<f32>>,
+
+    plugin_keyboard_events: Arc<Mutex<Vec<EguiKeyboardInput>>>,
+
+    clipboard_ctx:  Arc<Mutex<Option<copypasta::ClipboardContext>>>,
+
 }
 
 impl<T> Editor for EguiEditor<T>
@@ -129,6 +169,7 @@ where
     ) -> Box<dyn std::any::Any + Send + Sync> {
         let update = self.update.clone();
         let state = self.user_state.clone();
+        let plugin_keyboard_events = self.plugin_keyboard_events.clone();
 
         let (unscaled_width, unscaled_height) = self.egui_state.size();
         let scaling_factor = self.scaling_factor.load();
@@ -163,6 +204,14 @@ where
             state,
             |_, _, _| {},
             move |egui_ctx, _queue, state| {
+                if let Ok(mut plugin_keyboard_events) = plugin_keyboard_events.try_lock() {
+                    let mut events = vec![];
+                    std::mem::swap(&mut *plugin_keyboard_events, &mut events);
+                    for event in events.into_iter() {
+                        event.apply(egui_ctx);
+                    }
+                }
+
                 let setter = ParamSetter::new(context.as_ref());
 
                 // For now, just always redraw. Most plugin GUIs have meters, and those almost always
@@ -195,8 +244,117 @@ where
         // correctly. In the future we can use an `Arc<AtomicBool>` and only force a redraw when
         // that boolean is set.
     }
+
+    fn on_key_down(&self, keyboard_event: &keyboard_types::KeyboardEvent) -> bool {
+        assert_eq!(keyboard_event.state, keyboard_types::KeyState::Down);
+        self.handle_keyboard_event(keyboard_event)
+    }
+
+    fn on_key_up(&self, keyboard_event: &keyboard_types::KeyboardEvent) -> bool {
+        assert_eq!(keyboard_event.state, keyboard_types::KeyState::Up);
+        self.handle_keyboard_event(keyboard_event)
+    }
 }
 
+impl<T> EguiEditor<T> where T: 'static + Send + Sync {
+    fn handle_keyboard_event(&self, keyboard_event: &keyboard_types::KeyboardEvent) -> bool {
+        if self.egui_state.acceptable_keys.try_lock().map(|x| x.deref().clone()).unwrap_or_default().accepts(&keyboard_event.key) {
+            if let Ok(mut plugin_keyboard_events) = self.plugin_keyboard_events.try_lock() {
+                if let Ok(mut clipboard_ctx) = self.clipboard_ctx.try_lock() {
+                    plugin_keyboard_events.push(EguiKeyboardInput::from_keyboard_event(keyboard_event, clipboard_ctx.as_mut()));
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+}
+
+struct EguiKeyboardInput {
+    events: Vec<egui::Event>,
+    modifiers: Modifiers,
+}
+impl EguiKeyboardInput {
+    fn from_keyboard_event(event: &keyboard_types::KeyboardEvent, clipboard_ctx: Option<&mut copypasta::ClipboardContext>) -> EguiKeyboardInput {
+        let mut events = vec![];
+        let mut modifiers = Modifiers::default();
+
+        use keyboard_types::Code;
+
+        let pressed = event.state == keyboard_types::KeyState::Down;
+
+        match event.code {
+            Code::ShiftLeft | Code::ShiftRight => modifiers.shift = pressed,
+            Code::ControlLeft | Code::ControlRight => {
+                modifiers.ctrl = pressed;
+
+                #[cfg(not(target_os = "macos"))]
+                {
+                    modifiers.command = pressed;
+                }
+            }
+            Code::AltLeft | Code::AltRight => modifiers.alt = pressed,
+            Code::MetaLeft | Code::MetaRight => {
+                #[cfg(target_os = "macos")]
+                {
+                    modifiers.mac_cmd = pressed;
+                    modifiers.command = pressed;
+                }
+                () // prevent `rustfmt` from breaking this
+            }
+            _ => (),
+        }
+
+        if let Some(key) = translate_virtual_key_code(event.code) {
+            events.push(egui::Event::Key { key, pressed, modifiers });
+        }
+
+        if pressed {
+            // VirtualKeyCode::Paste etc in winit are broken/untrustworthy,
+            // so we detect these things manually:
+            if is_cut_command(modifiers, event.code) {
+                events.push(egui::Event::Cut);
+            } else if is_copy_command(modifiers, event.code) {
+                events.push(egui::Event::Copy);
+            } else if is_paste_command(modifiers, event.code) {
+                if let Some(clipboard_ctx) = clipboard_ctx {
+                    match clipboard_ctx.get_contents() {
+                        Ok(contents) => {
+                            events.push(egui::Event::Text(contents))
+                        }
+                        Err(err) => {
+                            eprintln!("Paste error: {}", err);
+                        }
+                    }
+                }
+            } else if let keyboard_types::Key::Character(written) = &event.key {
+                if !modifiers.ctrl && !modifiers.command {
+                    events.push(egui::Event::Text(written.clone()));
+                }
+            }
+        }
+        EguiKeyboardInput {
+            events,
+            modifiers
+        }
+    }
+
+    fn apply(self, ctx: &egui::Context) {
+        let mut input_mut = ctx.input_mut();
+        for event in self.events {
+            if let Event::Key { key, pressed, .. } = &event {
+                if *pressed {
+                    input_mut.keys_down.insert(*key);
+                } else {
+                    input_mut.keys_down.remove(key);
+                }
+            }
+            input_mut.raw.events.push(event.clone());
+            input_mut.events.push(event);
+        }
+        input_mut.modifiers = self.modifiers;
+    }
+}
 /// The window handle used for [`EguiEditor`].
 struct EguiEditorHandle {
     egui_state: Arc<EguiState>,

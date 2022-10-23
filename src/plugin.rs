@@ -294,6 +294,13 @@ pub trait Editor: Send + Sync {
     /// not allocate.
     fn param_values_changed(&self);
 
+
+    /// Handle key presses.
+    fn on_key_down(&self, keyboard_event: &keyboard_types::KeyboardEvent) -> bool;
+
+    /// Handle key releases.
+    fn on_key_up(&self,  keyboard_event: &keyboard_types::KeyboardEvent) -> bool;
+
     // TODO: Reconsider adding a tick function here for the Linux `IRunLoop`. To keep this platform
     //       and API agnostic, add a way to ask the GuiContext if the wrapper already provides a
     //       tick function. If it does not, then the Editor implementation must handle this by
