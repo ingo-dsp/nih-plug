@@ -2,7 +2,7 @@ use atomic_refcell::AtomicRefCell;
 use baseview::{EventStatus, Window, WindowHandler, WindowOpenOptions};
 use crossbeam::channel;
 use crossbeam::queue::ArrayQueue;
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 use raw_window_handle::HasRawWindowHandle;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -13,13 +13,16 @@ use std::thread;
 use super::backend::Backend;
 use super::config::WrapperConfig;
 use super::context::{WrapperGuiContext, WrapperInitContext, WrapperProcessContext};
-use crate::context::Transport;
+use crate::context::gui::AsyncExecutor;
+use crate::context::process::Transport;
+use crate::editor::{Editor, ParentWindowHandle, SpawnedWindow};
+use crate::event_loop::{EventLoop, MainThreadExecutor, OsEventLoop};
 use crate::midi::NoteEvent;
-use crate::param::internals::{ParamPtr, Params};
-use crate::param::ParamFlags;
+use crate::params::internals::ParamPtr;
+use crate::params::{ParamFlags, Params};
 use crate::plugin::{
-    AuxiliaryBuffers, AuxiliaryIOConfig, BufferConfig, BusConfig, Editor, ParentWindowHandle,
-    Plugin, ProcessMode, ProcessStatus, SpawnedWindow,
+    AuxiliaryBuffers, AuxiliaryIOConfig, BufferConfig, BusConfig, Plugin, ProcessMode,
+    ProcessStatus, TaskExecutor,
 };
 use crate::util::permit_alloc;
 use crate::wrapper::state::{self, PluginState};
@@ -33,7 +36,10 @@ pub struct Wrapper<P: Plugin, B: Backend> {
     backend: AtomicRefCell<B>,
 
     /// The wrapped plugin instance.
-    plugin: RwLock<P>,
+    plugin: Mutex<P>,
+    /// The plugin's background task executor closure. Wrapped in another struct so it can be used
+    /// as a [`MainContext`] with [`EventLoop`].
+    pub task_executor_wrapper: Arc<TaskExecutorWrapper<P>>,
     /// The plugin's parameters. These are fetched once during initialization. That way the
     /// `ParamPtr`s are guaranteed to live at least as long as this object and we can interact with
     /// the `Params` object without having to acquire a lock on `plugin`.
@@ -46,8 +52,16 @@ pub struct Wrapper<P: Plugin, B: Backend> {
     param_map: HashMap<String, ParamPtr>,
     /// The plugin's editor, if it has one. This object does not do anything on its own, but we need
     /// to instantiate this in advance so we don't need to lock the entire [`Plugin`] object when
-    /// creating an editor.
-    pub editor: Option<Arc<dyn Editor>>,
+    /// creating an editor. Wrapped in an `AtomicRefCell` because it needs to be initialized late.
+    pub editor: AtomicRefCell<Option<Arc<Mutex<Box<dyn Editor>>>>>,
+
+    /// A realtime-safe task queue so the plugin can schedule tasks that need to be run later on the
+    /// GUI thread. See the same field in the VST3 wrapper for more information on why this looks
+    /// the way it does.
+    ///
+    /// This is only used for executing [`AsyncExecutor`] tasks, so it's parameterized directly over
+    /// that using a special `MainThreadExecutor` wrapper around `AsyncExecutor`.
+    pub(crate) event_loop: OsEventLoop<P::BackgroundTask, TaskExecutorWrapper<P>>,
 
     config: WrapperConfig,
 
@@ -126,13 +140,26 @@ impl WindowHandler for WrapperWindowHandler {
     }
 }
 
+/// Adapter to make `TaskExecutor<P>` work as a `MainThreadExecutor`.
+pub struct TaskExecutorWrapper<P: Plugin> {
+    pub task_executor: Mutex<TaskExecutor<P>>,
+}
+
+impl<P: Plugin> MainThreadExecutor<P::BackgroundTask> for TaskExecutorWrapper<P> {
+    fn execute(&self, task: P::BackgroundTask, _is_gui_thread: bool) {
+        (self.task_executor.lock())(task)
+    }
+}
+
 impl<P: Plugin, B: Backend> Wrapper<P, B> {
     /// Instantiate a new instance of the standalone wrapper. Returns an error if the plugin does
     /// not accept the IO configuration from the wrapper config.
     pub fn new(backend: B, config: WrapperConfig) -> Result<Arc<Self>, WrapperError> {
         let plugin = P::default();
+        let task_executor_wrapper = Arc::new(TaskExecutorWrapper {
+            task_executor: Mutex::new(plugin.task_executor()),
+        });
         let params = plugin.params();
-        let editor = plugin.editor().map(Arc::from);
 
         // This is used to allow the plugin to restore preset data from its editor, see the comment
         // on `Self::updated_state_sender`
@@ -176,14 +203,18 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
         let wrapper = Arc::new(Wrapper {
             backend: AtomicRefCell::new(backend),
 
-            plugin: RwLock::new(plugin),
+            plugin: Mutex::new(plugin),
+            task_executor_wrapper: task_executor_wrapper.clone(),
             params,
             known_parameters: param_map.iter().map(|(_, ptr, _)| *ptr).collect(),
             param_map: param_map
                 .into_iter()
                 .map(|(param_id, param_ptr, _)| (param_id, param_ptr))
                 .collect(),
-            editor,
+            // Initialized later as it needs a reference to the wrapper for the async executor
+            editor: AtomicRefCell::new(None),
+
+            event_loop: OsEventLoop::new_and_spawn(task_executor_wrapper),
 
             bus_config: BusConfig {
                 num_input_channels: config.input_channels.unwrap_or(P::DEFAULT_INPUT_CHANNELS),
@@ -206,10 +237,34 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
             updated_state_receiver,
         });
 
+        // The editor needs to be initialized later so the Async executor can work.
+        *wrapper.editor.borrow_mut() = wrapper
+            .plugin
+            .lock()
+            .editor(AsyncExecutor {
+                execute_background: Arc::new({
+                    let wrapper = wrapper.clone();
+
+                    move |task| {
+                        let task_posted = wrapper.event_loop.schedule_background(task);
+                        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+                    }
+                }),
+                execute_gui: Arc::new({
+                    let wrapper = wrapper.clone();
+
+                    move |task| {
+                        let task_posted = wrapper.event_loop.schedule_gui(task);
+                        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+                    }
+                }),
+            })
+            .map(|editor| Arc::new(Mutex::new(editor)));
+
         // Right now the IO configuration is fixed in the standalone target, so if the plugin cannot
         // work with this then we cannot initialize the plugin at all.
         {
-            let mut plugin = wrapper.plugin.write();
+            let mut plugin = wrapper.plugin.lock();
             if !plugin.accepts_bus_config(&wrapper.bus_config) {
                 return Err(WrapperError::IncompatibleConfig {
                     input_channels: wrapper.bus_config.num_input_channels,
@@ -253,7 +308,7 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
             thread::spawn(move || this.run_audio_thread(terminate_audio_thread, gui_task_sender))
         };
 
-        match self.editor.clone() {
+        match self.editor.borrow().clone() {
             Some(editor) => {
                 let context = self.clone().make_gui_context(gui_task_sender);
 
@@ -262,11 +317,11 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
                 let scaling_policy = baseview::WindowScalePolicy::SystemScaleFactor;
                 #[cfg(not(target_os = "macos"))]
                 let scaling_policy = {
-                    editor.set_scale_factor(self.config.dpi_scale);
+                    editor.lock().set_scale_factor(self.config.dpi_scale);
                     baseview::WindowScalePolicy::ScaleFactor(self.config.dpi_scale as f64)
                 };
 
-                let (width, height) = editor.size();
+                let (width, height) = editor.lock().size();
                 Window::open_blocking(
                     WindowOpenOptions {
                         title: String::from(P::NAME),
@@ -282,7 +337,7 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
                         //       baseview does not support this yet. Once this is added, we should
                         //       immediately close the parent window when this happens so the loop
                         //       can exit.
-                        let editor_handle = editor.spawn(
+                        let editor_handle = editor.lock().spawn(
                             ParentWindowHandle {
                                 handle: window.raw_window_handle(),
                             },
@@ -310,7 +365,7 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
 
         // Some plugins may use this to clean up resources. Should not be needed for the standalone
         // application, but it seems like a good idea to stay consistent.
-        self.plugin.write().deactivate();
+        self.plugin.lock().deactivate();
 
         Ok(())
     }
@@ -333,15 +388,6 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
         nih_debug_assert!(push_successful, "The parameter change queue was full");
 
         push_successful
-    }
-
-    /// The DPI scale factor for this standalone application
-    pub fn dpi_scale(&self) -> f32 {
-        // DPI scaling should be ignored on macOS since the OS already handles this
-        #[cfg(target_os = "macos")]
-        return 1.0;
-        #[cfg(not(target_os = "macos"))]
-        return self.config.dpi_scale;
     }
 
     /// Get the plugin's state object, may be called by the plugin's GUI as part of its own preset
@@ -396,7 +442,7 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
                     }
 
                     let sample_rate = self.buffer_config.sample_rate;
-                    let mut plugin = self.plugin.write();
+                    let mut plugin = self.plugin.lock();
                     if let ProcessStatus::Error(err) = plugin.process(
                         buffer,
                         // TODO: Provide extra inputs and outputs in the JACk backend
@@ -445,10 +491,10 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
                     // FIXME: Zero capacity channels allocate on receiving, find a better
                     //        alternative that doesn't do that
                     let updated_state = permit_alloc(|| self.updated_state_receiver.try_recv());
-                    if let Ok(state) = updated_state {
+                    if let Ok(mut state) = updated_state {
                         unsafe {
-                            state::deserialize_object(
-                                &state,
+                            state::deserialize_object::<P>(
+                                &mut state,
                                 self.params.clone(),
                                 |param_id| self.param_map.get(param_id).copied(),
                                 Some(&self.buffer_config),
@@ -487,10 +533,18 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
         );
     }
 
-    /// Tell the editor that the parameter values have changed, if the plugin has an editor.
+    /// Tell the editor that the parameter values have changed, if the plugin has an editor. In the
+    /// off-chance that the editor instance is currently locked then nothing will happen, and the
+    /// request can safely be ignored.
     fn notify_param_values_changed(&self) {
-        if let Some(editor) = &self.editor {
-            editor.param_values_changed();
+        if let Some(editor) = self.editor.borrow().as_ref() {
+            match editor.try_lock() {
+                Some(editor) => editor.param_values_changed(),
+                None => nih_debug_assert_failure!(
+                    "The editor was locked when sending a parameter value change notification, \
+                     ignoring"
+                ),
+            }
         }
     }
 

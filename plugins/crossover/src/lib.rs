@@ -183,6 +183,8 @@ impl Plugin for Crossover {
         aux_outputs: Some(&["Band 1", "Band 2", "Band 3", "Band 4", "Band 5"]),
     };
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
@@ -198,7 +200,7 @@ impl Plugin for Crossover {
         &mut self,
         _bus_config: &BusConfig,
         buffer_config: &BufferConfig,
-        context: &mut impl InitContext,
+        context: &mut impl InitContext<Self>,
     ) -> bool {
         self.buffer_config = *buffer_config;
 
@@ -225,7 +227,7 @@ impl Plugin for Crossover {
         &mut self,
         buffer: &mut Buffer,
         aux: &mut AuxiliaryBuffers,
-        context: &mut impl ProcessContext,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         // Right now both crossover types only do 24 dB/octave Linkwitz-Riley style crossovers
         match self.params.crossover_type.value() {

@@ -252,11 +252,13 @@ impl Plugin for Diopser {
 
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
 
-    fn editor(&self) -> Option<Box<dyn Editor>> {
+    fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         editor::create(self.params.clone(), self.params.editor_state.clone())
     }
 
@@ -269,7 +271,7 @@ impl Plugin for Diopser {
         &mut self,
         _bus_config: &BusConfig,
         buffer_config: &BufferConfig,
-        _context: &mut impl InitContext,
+        _context: &mut impl InitContext<Self>,
     ) -> bool {
         self.sample_rate = buffer_config.sample_rate;
 
@@ -285,7 +287,7 @@ impl Plugin for Diopser {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext,
+        _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         // Since this is an expensive operation, only update the filters when it's actually
         // necessary, and allow smoothing only every n samples using the automation precision

@@ -168,6 +168,8 @@ impl Plugin for PubertySimulator {
     const DEFAULT_INPUT_CHANNELS: u32 = 2;
     const DEFAULT_OUTPUT_CHANNELS: u32 = 2;
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
@@ -181,7 +183,7 @@ impl Plugin for PubertySimulator {
         &mut self,
         _bus_config: &BusConfig,
         _buffer_config: &BufferConfig,
-        context: &mut impl InitContext,
+        context: &mut impl InitContext<Self>,
     ) -> bool {
         // Planning with RustFFT is very fast, but it will still allocate we we'll plan all of the
         // FFTs we might need in advance
@@ -221,7 +223,7 @@ impl Plugin for PubertySimulator {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        context: &mut impl ProcessContext,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         // Compensate for the window function, the overlap, and the extra gain introduced by the
         // IDFT operation

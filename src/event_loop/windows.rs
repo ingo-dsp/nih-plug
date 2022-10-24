@@ -1,12 +1,11 @@
 //! An event loop for windows, using an invisible window to hook into the host's message loop. This
 //! has only been tested under Wine with [yabridge](https://github.com/robbert-vdh/yabridge).
 
-use crossbeam::queue::ArrayQueue;
+use crossbeam::channel;
 use std::ffi::{c_void, CString};
 use std::mem;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::Weak;
 use std::thread::{self, ThreadId};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, PSTR, WPARAM};
 use windows::Win32::System::{
@@ -18,7 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_CREATE, WM_DESTROY, WM_USER, WNDCLASSEXA,
 };
 
-use super::{EventLoop, MainThreadExecutor};
+use super::{BackgroundThread, EventLoop, MainThreadExecutor};
 use crate::util::permit_alloc;
 
 /// The custom message ID for our notify event. If the hidden event loop window receives this, then
@@ -38,7 +37,7 @@ pub(crate) struct WindowsEventLoop<T, E> {
     /// The thing that ends up executing these tasks. The tasks are usually executed from the worker
     /// thread, but if the current thread is the main thread then the task cna also be executed
     /// directly.
-    executor: Weak<E>,
+    executor: Arc<E>,
 
     /// The ID of the main thread. In practice this is the ID of the thread that created this task
     /// queue.
@@ -52,7 +51,11 @@ pub(crate) struct WindowsEventLoop<T, E> {
     /// A queue of tasks that still need to be performed. When something gets added to this queue
     /// we'll wake up the window, which then continues to pop tasks off this queue until it is
     /// empty.
-    tasks: Arc<ArrayQueue<T>>,
+    tasks_sender: channel::Sender<T>,
+
+    /// A background thread for running tasks independently from the host's GUI thread. Useful for
+    /// longer, blocking tasks.
+    background_thread: BackgroundThread<T>,
 }
 
 impl<T, E> EventLoop<T, E> for WindowsEventLoop<T, E>
@@ -60,9 +63,8 @@ where
     T: Send + 'static,
     E: MainThreadExecutor<T> + 'static,
 {
-    fn new_and_spawn(executor: Weak<E>) -> Self {
-        // We'll pass one copy of the this to the window, and we'll keep the other copy here
-        let tasks = Arc::new(ArrayQueue::new(super::TASK_QUEUE_CAPACITY));
+    fn new_and_spawn(executor: Arc<E>) -> Self {
+        let (tasks_sender, tasks_receiver) = channel::bounded(super::TASK_QUEUE_CAPACITY);
 
         // Window classes need to have unique names or else multiple plugins loaded into the same
         // process will end up calling the other plugin's callbacks
@@ -85,8 +87,7 @@ where
         // can't pass the tasks queue and the executor to it directly, so this is a simple type
         // erased version of the polling loop.
         let callback: PollCallback = {
-            let executor = executor.clone();
-            let tasks = tasks.clone();
+            let executor = Arc::downgrade(&executor);
 
             Box::new(move || {
                 let executor = match executor.upgrade() {
@@ -97,8 +98,8 @@ where
                     }
                 };
 
-                while let Some(task) = tasks.pop() {
-                    unsafe { executor.execute(task) };
+                while let Ok(task) = tasks_receiver.try_recv() {
+                    executor.execute(task, true);
                 }
             })
         };
@@ -125,31 +126,21 @@ where
         assert!(!window.is_invalid());
 
         Self {
-            executor,
+            executor: executor.clone(),
             main_thread_id: thread::current().id(),
             message_window: window,
             message_window_class_name: class_name,
-            tasks,
+            tasks_sender,
+            background_thread: BackgroundThread::new_and_spawn(executor),
         }
     }
 
-    fn do_maybe_async(&self, task: T) -> bool {
+    fn schedule_gui(&self, task: T) -> bool {
         if self.is_main_thread() {
-            match self.executor.upgrade() {
-                Some(e) => {
-                    unsafe { e.execute(task) };
-                    true
-                }
-                None => {
-                    nih_trace!(
-                        "The executor doesn't exist but somehow it's still submitting tasks, this \
-                         shouldn't be possible!"
-                    );
-                    false
-                }
-            }
+            self.executor.execute(task, true);
+            true
         } else {
-            let success = self.tasks.push(task).is_ok();
+            let success = self.tasks_sender.try_send(task).is_ok();
             if success {
                 // Instead of polling on a timer, we can just wake up the window whenever there's a
                 // new message.
@@ -160,6 +151,10 @@ where
 
             success
         }
+    }
+
+    fn schedule_background(&self, task: T) -> bool {
+        self.background_thread.schedule(task)
     }
 
     fn is_main_thread(&self) -> bool {

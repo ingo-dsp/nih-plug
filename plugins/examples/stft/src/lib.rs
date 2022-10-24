@@ -95,6 +95,8 @@ impl Plugin for Stft {
 
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
@@ -108,7 +110,7 @@ impl Plugin for Stft {
         &mut self,
         _bus_config: &BusConfig,
         _buffer_config: &BufferConfig,
-        context: &mut impl InitContext,
+        context: &mut impl InitContext<Self>,
     ) -> bool {
         // The plugin's latency consists of the block size from the overlap-add procedure and half
         // of the filter kernel's size (since we're using a linear phase/symmetrical convolution
@@ -129,7 +131,7 @@ impl Plugin for Stft {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext,
+        _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         self.stft
             .process_overlap_add(buffer, 1, |_channel_idx, real_fft_buffer| {

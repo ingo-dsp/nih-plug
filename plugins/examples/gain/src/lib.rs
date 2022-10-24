@@ -132,6 +132,11 @@ impl Plugin for Gain {
     // splits.
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
+    // More advanced plugins can use this to run expensive background tasks. See the field's
+    // documentation for more information. `()` means that the plugin does not have any background
+    // tasks.
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
@@ -150,7 +155,7 @@ impl Plugin for Gain {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext,
+        _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         for channel_samples in buffer.iter_samples() {
             // Smoothing is optionally built into the parameters themselves

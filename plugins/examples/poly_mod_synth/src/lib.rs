@@ -155,6 +155,8 @@ impl Plugin for PolyModSynth {
     const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
@@ -174,7 +176,7 @@ impl Plugin for PolyModSynth {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        context: &mut impl ProcessContext,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         // NIH-plug has a block-splitting adapter for `Buffer`. While this works great for effect
         // plugins, for polyphonic synths the block size should be `min(MAX_BLOCK_SIZE,
@@ -440,7 +442,7 @@ impl PolyModSynth {
     /// voice will be stolen. Returns a reference to the new voice.
     fn start_voice(
         &mut self,
-        context: &mut impl ProcessContext,
+        context: &mut impl ProcessContext<Self>,
         sample_offset: u32,
         voice_id: Option<i32>,
         channel: u8,
@@ -541,7 +543,7 @@ impl PolyModSynth {
     /// matching voices.
     fn choke_voices(
         &mut self,
-        context: &mut impl ProcessContext,
+        context: &mut impl ProcessContext<Self>,
         sample_offset: u32,
         voice_id: Option<i32>,
         channel: u8,

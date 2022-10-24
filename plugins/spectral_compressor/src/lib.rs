@@ -272,11 +272,13 @@ impl Plugin for SpectralCompressor {
 
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
 
-    fn editor(&self) -> Option<Box<dyn Editor>> {
+    fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         editor::create(self.params.clone(), self.editor_state.clone())
     }
 
@@ -292,7 +294,7 @@ impl Plugin for SpectralCompressor {
         &mut self,
         bus_config: &BusConfig,
         buffer_config: &BufferConfig,
-        context: &mut impl InitContext,
+        context: &mut impl InitContext<Self>,
     ) -> bool {
         // Needed to update the compressors later
         self.buffer_config = *buffer_config;
@@ -343,7 +345,7 @@ impl Plugin for SpectralCompressor {
         &mut self,
         buffer: &mut Buffer,
         aux: &mut AuxiliaryBuffers,
-        context: &mut impl ProcessContext,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         // If the window size has changed since the last process call, reset the buffers and chance
         // our latency. All of these buffers already have enough capacity so this won't allocate.

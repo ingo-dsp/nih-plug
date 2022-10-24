@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::param::internals::{ParamPtr, Params};
-use crate::param::{Param, ParamMut};
+use crate::params::internals::ParamPtr;
+use crate::params::{Param, ParamMut, Params};
 use crate::plugin::{BufferConfig, Plugin};
 
 // These state objects are also exposed directly to the plugin so it can do its own internal preset
@@ -45,7 +45,7 @@ pub struct PluginState {
     /// parameter automation though, depending on how the host implements that.
     pub params: BTreeMap<String, ParamValue>,
     /// Arbitrary fields that should be persisted together with the plugin's parameters. Any field
-    /// on the [`Params`][crate::param::internals::Params] struct that's annotated with `#[persist =
+    /// on the [`Params`][crate::params::Params] struct that's annotated with `#[persist =
     /// "stable_name"]` will be persisted this way.
     ///
     /// The individual fields are also serialized as JSON so they can safely be restored
@@ -159,12 +159,18 @@ pub(crate) unsafe fn serialize_json<'a, P: Plugin>(
 ///
 /// Make sure to reinitialize plugin after deserializing the state so it can react to the new
 /// parameter values. The smoothers have already been reset by this function.
-pub(crate) unsafe fn deserialize_object(
-    state: &PluginState,
+///
+/// The [`Plugin`] argument is used to call [`Plugin::filter_state()`] just before loading the
+/// state.
+pub(crate) unsafe fn deserialize_object<P: Plugin>(
+    state: &mut PluginState,
     plugin_params: Arc<dyn Params>,
     params_getter: impl Fn(&str) -> Option<ParamPtr>,
     current_buffer_config: Option<&BufferConfig>,
 ) -> bool {
+    // This lets the plugin perform migrations on old state if needed
+    P::filter_state(state);
+
     let sample_rate = current_buffer_config.map(|c| c.sample_rate);
     for (param_id_str, param_value) in &state.params {
         let param_ptr = match params_getter(param_id_str.as_str()) {
@@ -223,14 +229,17 @@ pub(crate) unsafe fn deserialize_object(
 ///
 /// Make sure to reinitialize plugin after deserializing the state so it can react to the new
 /// parameter values. The smoothers have already been reset by this function.
-pub(crate) unsafe fn deserialize_json(
+///
+/// The [`Plugin`] argument is used to call [`Plugin::filter_state()`] just before loading the
+/// state.
+pub(crate) unsafe fn deserialize_json<P: Plugin>(
     state: &[u8],
     plugin_params: Arc<dyn Params>,
     params_getter: impl Fn(&str) -> Option<ParamPtr>,
     current_buffer_config: Option<&BufferConfig>,
 ) -> bool {
     #[cfg(feature = "zstd")]
-    let state: PluginState = match zstd::decode_all(state) {
+    let mut state: PluginState = match zstd::decode_all(state) {
         Ok(decompressed) => match serde_json::from_slice(decompressed.as_slice()) {
             Ok(s) => {
                 nih_log!("Deserialized compressed");
@@ -261,7 +270,7 @@ pub(crate) unsafe fn deserialize_json(
     };
 
     #[cfg(not(feature = "zstd"))]
-    let state: PluginState = match serde_json::from_slice(state) {
+    let mut state: PluginState = match serde_json::from_slice(state) {
         Ok(s) => s,
         Err(err) => {
             nih_debug_assert_failure!("Error while deserializing state: {}", err);
@@ -269,5 +278,10 @@ pub(crate) unsafe fn deserialize_json(
         }
     };
 
-    deserialize_object(&state, plugin_params, params_getter, current_buffer_config)
+    deserialize_object::<P>(
+        &mut state,
+        plugin_params,
+        params_getter,
+        current_buffer_config,
+    )
 }

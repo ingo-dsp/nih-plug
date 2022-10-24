@@ -83,16 +83,19 @@ impl Plugin for Gain {
 
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
 
-    fn editor(&self) -> Option<Box<dyn Editor>> {
+    fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let params = self.params.clone();
         let peak_meter = self.peak_meter.clone();
         create_egui_editor(
             self.params.editor_state.clone(),
             (),
+            |_, _| {},
             move |egui_ctx, setter, _state| {
                 egui::CentralPanel::default().show(egui_ctx, |ui| {
                     // NOTE: See `plugins/diopser/src/editor.rs` for an example using the generic UI widget
@@ -155,7 +158,7 @@ impl Plugin for Gain {
         &mut self,
         _bus_config: &BusConfig,
         buffer_config: &BufferConfig,
-        _context: &mut impl InitContext,
+        _context: &mut impl InitContext<Self>,
     ) -> bool {
         // After `PEAK_METER_DECAY_MS` milliseconds of pure silence, the peak meter's value should
         // have dropped by 12 dB
@@ -170,7 +173,7 @@ impl Plugin for Gain {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext,
+        _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         for channel_samples in buffer.iter_samples() {
             let mut amplitude = 0.0;

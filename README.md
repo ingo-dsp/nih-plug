@@ -83,7 +83,7 @@ Scroll down for more information on the underlying plugin framework.
 - Standalone binaries can be made by calling `nih_export_standalone(Foo)` from
   your `main()` function. Standalones come with a CLI for configuration and full
   JACK audio, MIDI, and transport support.
-- Declarative parameter handling without any boilerplate.
+- Rich declarative parameter system without any boilerplate.
   - Define parameters for your plugin by adding `FloatParam`, `IntParam`,
     `BoolParam`, and `EnumParam<T>` fields to your parameter struct, assign
     stable IDs to them with the `#[id = "foobar"]`, and a `#[derive(Params)]`
@@ -97,6 +97,8 @@ Scroll down for more information on the underlying plugin framework.
   - Store additional non-parameter state for your plugin by adding any field
     that can be serialized with [Serde](https://serde.rs/) to your plugin's
     `Params` object and annotating them with `#[persist = "key"]`.
+  - Optional support for state migrations, for handling breaking changes in
+    plugin parameters.
   - Group your parameters into logical groups by nesting `Params` objects using
     the `#[nested(group = "...")]`attribute.
   - The `#[nested]` attribute also enables you to use multiple copies of the
@@ -105,6 +107,8 @@ Scroll down for more information on the underlying plugin framework.
     trait to enable compile time generated parameters and other bespoke
     functionality.
 - Stateful. Behaves mostly like JUCE, just without all of the boilerplate.
+- Comes with a simple yet powerful way to asynchronously run background tasks
+  from a plugin that's both type-safe and realtime-safe.
 - Does not make any assumptions on how you want to process audio, but does come
   with utilities and adapters to help with common access patterns.
   - Efficiently iterate over an audio buffer either per-sample per-channel,

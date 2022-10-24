@@ -1,8 +1,8 @@
 use atomic_float::AtomicF32;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use raw_window_handle::RawWindowHandle;
 use std::any::Any;
-use std::borrow::Borrow;
+use std::borrow::{Borrow, BorrowMut};
 use std::ffi::{c_void, CStr};
 use std::mem;
 use std::sync::atomic::Ordering;
@@ -16,8 +16,8 @@ use baseview::Size;
 
 use super::inner::{Task, WrapperInner};
 use super::util::{ObjectPtr, VstPtr};
-use crate::plugin::{Editor, ParentWindowHandle, SpawnedWindow, Vst3Plugin};
-use crate::wrapper::vst3::keyboard::create_vst_keyboard_event;
+use crate::editor::{Editor, ParentWindowHandle, SpawnedWindow};
+use crate::plugin::Vst3Plugin;
 
 // Alias needed for the VST3 attribute macro
 use vst3_sys as vst3_com;
@@ -31,6 +31,7 @@ use {
     libc,
     vst3_sys::gui::linux::{FileDescriptor, IEventHandler, IRunLoop},
 };
+use crate::wrapper::vst3::keyboard::create_vst_keyboard_event;
 
 // Window handle type constants missing from vst3-sys
 #[allow(unused)]
@@ -56,7 +57,7 @@ struct RunLoopEventHandlerWrapper<P: Vst3Plugin>(std::marker::PhantomData<P>);
 #[VST3(implements(IPlugView, IPlugViewContentScaleSupport))]
 pub(crate) struct WrapperView<P: Vst3Plugin> {
     inner: Arc<WrapperInner<P>>,
-    editor: Arc<dyn Editor>,
+    editor: Arc<Mutex<Box<dyn Editor>>>,
     editor_handle: RwLock<Option<Box<dyn SpawnedWindow>>>,
 
     /// The `IPlugFrame` instance passed by the host during [IPlugView::set_frame()].
@@ -99,11 +100,11 @@ struct RunLoopEventHandler<P: Vst3Plugin> {
     /// implementations. Instead, we'll post tasks to this queue, ask the host to call
     /// [`on_main_thread()`][Self::on_main_thread()] on the main thread, and then continue to pop
     /// tasks off this queue there until it is empty.
-    tasks: ArrayQueue<Task>,
+    tasks: ArrayQueue<Task<P>>,
 }
 
 impl<P: Vst3Plugin> WrapperView<P> {
-    pub fn new(inner: Arc<WrapperInner<P>>, editor: Arc<dyn Editor>) -> Box<Self> {
+    pub fn new(inner: Arc<WrapperInner<P>>, editor: Arc<Mutex<Box<dyn Editor>>>) -> Box<Self> {
         Self::allocate(
             inner,
             editor,
@@ -136,7 +137,7 @@ impl<P: Vst3Plugin> WrapperView<P> {
 
         match &*self.plug_frame.read() {
             Some(plug_frame) => {
-                let (unscaled_width, unscaled_height) = self.editor.size();
+                let (unscaled_width, unscaled_height) = self.editor.lock().size();
                 let scaling_factor = self.scaling_factor.load(Ordering::Relaxed);
                 let mut size = ViewRect {
                     right: (unscaled_width as f32 * scaling_factor).round() as i32,
@@ -165,7 +166,7 @@ impl<P: Vst3Plugin> WrapperView<P> {
     /// run on the host's UI thread. If not, then this will return an `Err` value containing the
     /// task so it can be run elsewhere.
     #[cfg(target_os = "linux")]
-    pub fn do_maybe_in_run_loop(&self, task: Task) -> Result<(), Task> {
+    pub fn do_maybe_in_run_loop(&self, task: Task<P>) -> Result<(), Task<P>> {
         match &*self.run_loop_event_handler.0.read() {
             Some(run_loop) => run_loop.post_task(task),
             None => Err(task),
@@ -177,7 +178,7 @@ impl<P: Vst3Plugin> WrapperView<P> {
     /// task so it can be run elsewhere.
     #[cfg(not(target_os = "linux"))]
     #[must_use]
-    pub fn do_maybe_in_run_loop(&self, task: Task) -> Result<(), Task> {
+    pub fn do_maybe_in_run_loop(&self, task: Task<P>) -> Result<(), Task<P>> {
         Err(task)
     }
 }
@@ -225,7 +226,7 @@ impl<P: Vst3Plugin> RunLoopEventHandler<P> {
 
     /// Post a task to the tasks queue so it will be run on the host's GUI thread later. Returns the
     /// task if the queue is full and the task could not be posted.
-    pub fn post_task(&self, task: Task) -> Result<(), Task> {
+    pub fn post_task(&self, task: Task<P>) -> Result<(), Task<P>> {
         self.tasks.push(task)?;
 
         // We need to use a Unix domain socket to let the host know to call our event handler. In
@@ -318,7 +319,7 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
                 }
             };
 
-            *editor_handle = Some(self.editor.spawn(
+            *editor_handle = Some(self.editor.lock().spawn(
                 ParentWindowHandle { handle },
                 self.inner.clone().make_gui_context(),
                 false
@@ -357,7 +358,7 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
 
     unsafe fn on_key_down(&self, key: vst3_sys::base::char16, key_code: i16, modifiers: i16) -> tresult {
         if let Ok(event) = create_vst_keyboard_event(key, key_code, modifiers, KeyState::Down) {
-            if self.editor.on_key_down(&event) {
+            if self.editor.lock().on_key_down(&event) {
                 return kResultTrue;
             }
         }
@@ -366,7 +367,7 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
 
     unsafe fn on_key_up(&self, key: vst3_sys::base::char16, key_code: i16, modifiers: i16) -> tresult {
         if let Ok(event) = create_vst_keyboard_event(key, key_code, modifiers, KeyState::Up) {
-            if self.editor.on_key_up(&event) {
+            if self.editor.lock().on_key_up(&event) {
                 return kResultTrue;
             }
         }
@@ -381,7 +382,7 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
         // TODO: This is technically incorrect during resizing, this should still report the old
         //       size until `.on_size()` has been called. We should probably only bother fixing this
         //       if it turns out to be an issue.
-        let (unscaled_width, unscaled_height) = self.editor.size();
+        let (unscaled_width, unscaled_height) = self.editor.lock().size();
         let scaling_factor = self.scaling_factor.load(Ordering::Relaxed);
         let size = &mut *size;
         size.left = 0;
@@ -477,7 +478,7 @@ impl<P: Vst3Plugin> IPlugViewContentScaleSupport for WrapperView<P> {
             return kResultFalse;
         }
 
-        if self.editor.set_scale_factor(factor) {
+        if self.editor.lock().set_scale_factor(factor) {
             self.scaling_factor.store(factor, Ordering::Relaxed);
             kResultOk
         } else {
@@ -492,7 +493,7 @@ impl<P: Vst3Plugin> IEventHandler for RunLoopEventHandler<P> {
         // This gets called from the host's UI thread because we wrote some bytes to the Unix domain
         // socket. We'll read that data from the socket again just to make REAPER happy.
         while let Some(task) = self.tasks.pop() {
-            self.inner.execute(task);
+            self.inner.execute(task, true);
 
             let mut notify_value = 1i8;
             const NOTIFY_VALUE_SIZE: usize = std::mem::size_of::<i8>();
@@ -521,7 +522,7 @@ impl<P: Vst3Plugin> Drop for RunLoopEventHandler<P> {
                 .borrow()
                 .as_ref()
                 .unwrap()
-                .do_maybe_async(task);
+                .schedule_gui(task);
         }
 
         if posting_failed {

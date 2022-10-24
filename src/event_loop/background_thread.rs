@@ -1,30 +1,17 @@
-//! An event loop implementation for Linux. APIs on Linux are generally thread safe, so the context
-//! of a main thread does not exist there. Because of that, this mostly just serves as a way to
-//! delegate expensive processing to another thread.
+//! Used by the other [`EventLoop`][super::EventLoop] implementations to spawn threads for running
+//! tasks in the background without blocking the GUI thread.
+//!
+//! This is essentially a slimmed down version of the `LinuxEventLoop`.
 
 use crossbeam::channel;
 use std::sync::{Arc, Weak};
-use std::thread::{self, JoinHandle, ThreadId};
+use std::thread::{self, JoinHandle};
 
-use super::{EventLoop, MainThreadExecutor};
-use crate::util::permit_alloc;
+use super::MainThreadExecutor;
 
-/// See [`EventLoop`][super::EventLoop].
-#[cfg_attr(
-    target_os = "macos",
-    deprecated = "macOS needs to have its own event loop implementation, this implementation may \
-                  not work correctly"
-)]
-pub(crate) struct LinuxEventLoop<T, E> {
-    /// The thing that ends up executing these tasks. The tasks are usually executed from the worker
-    /// thread, but if the current thread is the main thread then the task cna also be executed
-    /// directly.
-    executor: Arc<E>,
-
-    /// The ID of the main thread. In practice this is the ID of the thread that created this task
-    /// queue.
-    main_thread_id: ThreadId,
-
+/// See the module's documentation. This is a slimmed down version of the `LinuxEventLoop` that can
+/// be used with other OS and plugin format specific event loop implementations.
+pub(crate) struct BackgroundThread<T> {
     /// A thread that act as our worker thread. When [`schedule_gui()`][Self::schedule_gui()] is
     /// called, this thread will be woken up to execute the task on the executor. This is wrapped in
     /// an `Option` so the thread can be taken out of it and joined when this struct gets dropped.
@@ -42,51 +29,34 @@ enum Message<T> {
     Shutdown,
 }
 
-impl<T, E> EventLoop<T, E> for LinuxEventLoop<T, E>
+impl<T> BackgroundThread<T>
 where
     T: Send + 'static,
-    E: MainThreadExecutor<T> + 'static,
 {
-    fn new_and_spawn(executor: Arc<E>) -> Self {
+    pub fn new_and_spawn<E>(executor: Arc<E>) -> Self
+    where
+        E: MainThreadExecutor<T> + 'static,
+    {
         let (tasks_sender, tasks_receiver) = channel::bounded(super::TASK_QUEUE_CAPACITY);
 
         Self {
-            executor: executor.clone(),
-            main_thread_id: thread::current().id(),
             // With our drop implementation we guarantee that this thread never outlives this struct
             worker_thread: Some(
                 thread::Builder::new()
-                    .name(String::from("worker"))
+                    .name(String::from("bg-worker"))
                     .spawn(move || worker_thread(tasks_receiver, Arc::downgrade(&executor)))
-                    .expect("Could not spawn worker thread"),
+                    .expect("Could not spawn background worker thread"),
             ),
             tasks_sender,
         }
     }
 
-    fn schedule_gui(&self, task: T) -> bool {
-        if self.is_main_thread() {
-            self.executor.execute(task, true);
-            true
-        } else {
-            self.tasks_sender.try_send(Message::Task(task)).is_ok()
-        }
-    }
-
-    fn schedule_background(&self, task: T) -> bool {
-        // This event loop implementation already uses a thread that's completely decoupled from the
-        // operating system's or the host's main thread, so we don't need _another_ thread here
+    pub fn schedule(&self, task: T) -> bool {
         self.tasks_sender.try_send(Message::Task(task)).is_ok()
-    }
-
-    fn is_main_thread(&self) -> bool {
-        // FIXME: `thread::current()` may allocate the first time it's called, is there a safe
-        //        non-allocating version of this without using huge OS-specific libraries?
-        permit_alloc(|| thread::current().id() == self.main_thread_id)
     }
 }
 
-impl<T, E> Drop for LinuxEventLoop<T, E> {
+impl<T> Drop for BackgroundThread<T> {
     fn drop(&mut self) {
         self.tasks_sender
             .send(Message::Shutdown)

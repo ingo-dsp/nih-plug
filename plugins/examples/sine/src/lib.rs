@@ -111,6 +111,8 @@ impl Plugin for Sine {
     const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
@@ -124,7 +126,7 @@ impl Plugin for Sine {
         &mut self,
         _bus_config: &BusConfig,
         buffer_config: &BufferConfig,
-        _context: &mut impl InitContext,
+        _context: &mut impl InitContext<Self>,
     ) -> bool {
         self.sample_rate = buffer_config.sample_rate;
 
@@ -142,7 +144,7 @@ impl Plugin for Sine {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        context: &mut impl ProcessContext,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let mut next_event = context.next_event();
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {

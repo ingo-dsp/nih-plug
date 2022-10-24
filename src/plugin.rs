@@ -1,33 +1,43 @@
 //! Traits and structs describing plugins and editors.
 
-use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
-use std::any::Any;
 use std::sync::Arc;
-use baseview::Size;
 
 use crate::buffer::Buffer;
-use crate::context::{GuiContext, InitContext, ProcessContext};
+use crate::context::init::InitContext;
+use crate::context::process::ProcessContext;
+use crate::editor::Editor;
 use crate::midi::MidiConfig;
-use crate::param::internals::Params;
+use crate::params::Params;
+use crate::prelude::AsyncExecutor;
 use crate::wrapper::clap::features::ClapFeature;
+use crate::wrapper::state::PluginState;
+
+/// A function that can execute a plugin's [`BackgroundTask`][Plugin::BackgroundTask]s. A plugin can
+/// dispatch these tasks from the `initialize()` function, the `process()` function, or the GUI, so
+/// they can be deferred for later to avoid blocking realtime contexts.
+pub type TaskExecutor<P> = Box<dyn Fn(<P as Plugin>::BackgroundTask) + Send>;
 
 /// Basic functionality that needs to be implemented by a plugin. The wrappers will use this to
 /// expose the plugin in a particular plugin format.
 ///
 /// The main thing you need to do is define a `[Params]` struct containing all of your parameters.
 /// See the trait's documentation for more information on how to do that, or check out the examples.
+/// Most of the other functionality is optional and comes with default trait method implementations.
 ///
-/// This is super basic, and lots of things I didn't need or want to use yet haven't been
-/// implemented. Notable missing features include:
+/// Some notable not yet implemented features include:
 ///
 /// - MIDI SysEx and MIDI2 for CLAP, note expressions, polyphonic modulation and MIDI1 are already
 ///   supported
 /// - Audio thread thread pools (with host integration in CLAP)
 #[allow(unused_variables)]
-pub trait Plugin: Default + Send + Sync + 'static {
+pub trait Plugin: Default + Send + 'static {
+    /// The plugin's name.
     const NAME: &'static str;
+    /// The name of the plugin's vendor.
     const VENDOR: &'static str;
+    /// A URL pointing to the plugin's web page.
     const URL: &'static str;
+    /// The vendor's email address.
     const EMAIL: &'static str;
 
     /// Semver compatible version string (e.g. `0.0.1`). Hosts likely won't do anything with this,
@@ -86,6 +96,21 @@ pub trait Plugin: Default + Send + Sync + 'static {
     /// to do offline processing.
     const HARD_REALTIME_ONLY: bool = false;
 
+    /// A type encoding the different background tasks this plugin wants to run, or `()` if it
+    /// doesn't have any background tasks. This is usually set to an enum type. The task type should
+    /// not contain any heap allocated data like [`Vec`]s and [`Box`]es. Tasks can be send using the
+    /// methods on the various [`*Context`][crate::context] objects.
+    //
+    // NOTE: Sadly it's not yet possible to default this and the `async_executor()` function to
+    //       `()`: https://github.com/rust-lang/rust/issues/29661
+    type BackgroundTask: Send;
+    /// A function that executes the plugin's tasks. Queried once when the plugin instance is
+    /// created. See [`BackgroundTask`][Self::BackgroundTask].
+    fn task_executor(&self) -> TaskExecutor<Self> {
+        // In the default implementation we can simply ignore the value
+        Box::new(|_| ())
+    }
+
     /// The plugin's parameters. The host will update the parameter values before calling
     /// `process()`. These parameters are identified by strings that should never change when the
     /// plugin receives an update.
@@ -97,9 +122,21 @@ pub trait Plugin: Default + Send + Sync + 'static {
     /// access into the editor. You can later modify the parameters through the
     /// [`GuiContext`][crate::prelude::GuiContext] and [`ParamSetter`][crate::prelude::ParamSetter] after the editor
     /// GUI has been created.
-    fn editor(&self) -> Option<Box<dyn Editor>> {
+    fn editor(&self, async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         None
     }
+
+    /// This function is always called just before a [`PluginState`] is loaded. This lets you
+    /// directly modify old plugin state to perform migrations based on the [`PluginState::version`]
+    /// field. Some examples of use cases for this are renaming parameter indices, remapping
+    /// parameter values, and preserving old preset compatibility when introducing new parameters
+    /// with default values that would otherwise change the sound of a preset. Keep in mind that
+    /// automation may still be broken in the first two use cases.
+    ///
+    /// # Note
+    ///
+    /// This is an advanced feature that the vast majority of plugins won't need to implement.
+    fn filter_state(state: &mut PluginState) {}
 
     //
     // The following functions follow the lifetime of the plugin.
@@ -130,7 +167,7 @@ pub trait Plugin: Default + Send + Sync + 'static {
         &mut self,
         bus_config: &BusConfig,
         buffer_config: &BufferConfig,
-        context: &mut impl InitContext,
+        context: &mut impl InitContext<Self>,
     ) -> bool {
         true
     }
@@ -165,7 +202,7 @@ pub trait Plugin: Default + Send + Sync + 'static {
         &mut self,
         buffer: &mut Buffer,
         aux: &mut AuxiliaryBuffers,
-        context: &mut impl ProcessContext,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus;
 
     /// Called when the plugin is deactivated. The host will call
@@ -238,92 +275,6 @@ const fn swap_vst3_uid_byte_order(mut uid: [u8; 16]) -> [u8; 16] {
     uid[7] = original_uid[6];
 
     uid
-}
-
-/// An editor for a [`Plugin`].
-pub trait Editor: Send + Sync {
-    /// Create an instance of the plugin's editor and embed it in the parent window. As explained in
-    /// [`Plugin::editor()`], you can then read the parameter values directly from your [`Params`]
-    /// object, and modifying the values can be done using the functions on the
-    /// [`ParamSetter`][crate::prelude::ParamSetter]. When you change a parameter value that way it will be
-    /// broadcasted to the host and also updated in your [`Params`] struct.
-    ///
-    /// This function should return a handle to the editor, which will be dropped when the editor
-    /// gets closed. Implement the [`Drop`] trait on the returned handle if you need to explicitly
-    /// handle the editor's closing behavior.
-    ///
-    /// If [`set_scale_factor()`][Self::set_scale_factor()] has been called, then any created
-    /// windows should have their sizes multiplied by that factor.
-    ///
-    /// The wrapper guarantees that a previous handle has been dropped before this function is
-    /// called again.
-    //
-    // TODO: Think of how this would work with the event loop. On Linux the wrapper must provide a
-    //       timer using VST3's `IRunLoop` interface, but on Window and macOS the window would
-    //       normally register its own timer. Right now we just ignore this because it would
-    //       otherwise be basically impossible to have this still be GUI-framework agnostic. Any
-    //       callback that deos involve actual GUI operations will still be spooled to the IRunLoop
-    //       instance.
-    // TODO: This function should return an `Option` instead. Right now window opening failures are
-    //       always fatal. This would need to be fixed in baseview first.
-    fn spawn(
-        &self,
-        parent: ParentWindowHandle,
-        context: Arc<dyn GuiContext>,
-        request_keyboard_focus: bool,
-    ) -> Box<dyn SpawnedWindow + Send + Sync>;
-
-    /// Returns the (current) size of the editor in pixels as a `(width, height)` pair. This size
-    /// must be reported in _logical pixels_, i.e. the size before being multiplied by the DPI
-    /// scaling factor to get the actual physical screen pixels.
-    fn size(&self) -> (u32, u32);
-
-    /// Set the DPI scaling factor, if supported. The plugin APIs don't make any guarantees on when
-    /// this is called, but for now just assume it will be the first function that gets called
-    /// before creating the editor. If this is set, then any windows created by this editor should
-    /// have their sizes multiplied by this scaling factor on Windows and Linux.
-    ///
-    /// Right now this is never called on macOS since DPI scaling is built into the operating system
-    /// there.
-    fn set_scale_factor(&self, factor: f32) -> bool;
-
-    /// A callback that will be called whenever the parameter values changed while the editor is
-    /// open. You don't need to do anything with this, but this can be used to force a redraw when
-    /// the host sends a new value for a parameter or when a parameter change sent to the host gets
-    /// processed.
-    ///
-    /// This function will be called from the **audio thread**. It must thus be lock-free and may
-    /// not allocate.
-    fn param_values_changed(&self);
-
-
-    /// Handle key presses.
-    fn on_key_down(&self, keyboard_event: &keyboard_types::KeyboardEvent) -> bool;
-
-    /// Handle key releases.
-    fn on_key_up(&self,  keyboard_event: &keyboard_types::KeyboardEvent) -> bool;
-
-    // TODO: Reconsider adding a tick function here for the Linux `IRunLoop`. To keep this platform
-    //       and API agnostic, add a way to ask the GuiContext if the wrapper already provides a
-    //       tick function. If it does not, then the Editor implementation must handle this by
-    //       itself. This would also need an associated `PREFERRED_FRAME_RATE` constant.
-    // TODO: Host->Plugin resizing
-}
-
-
-pub trait SpawnedWindow {
-    fn resize(&self, size: Size);
-}
-
-/// A raw window handle for platform and GUI framework agnostic editors.
-pub struct ParentWindowHandle {
-    pub handle: RawWindowHandle,
-}
-
-unsafe impl HasRawWindowHandle for ParentWindowHandle {
-    fn raw_window_handle(&self) -> RawWindowHandle {
-        self.handle
-    }
 }
 
 /// The plugin's IO configuration.
@@ -407,8 +358,8 @@ pub enum ProcessStatus {
     KeepAlive,
 }
 
-/// The plugin's current processing mode. Can be queried through [`ProcessContext::process_mode()`].
-/// The host will reinitialize the plugin whenever this changes.
+/// The plugin's current processing mode. Exposed through [`BufferConfig::process_mode`]. The host
+/// will reinitialize the plugin whenever this changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessMode {
     /// The plugin is processing audio in real time at a fixed rate.

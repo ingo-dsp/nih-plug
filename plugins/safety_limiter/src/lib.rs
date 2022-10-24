@@ -157,6 +157,8 @@ impl Plugin for SafetyLimiter {
     const DEFAULT_INPUT_CHANNELS: u32 = 2;
     const DEFAULT_OUTPUT_CHANNELS: u32 = 2;
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
@@ -169,7 +171,7 @@ impl Plugin for SafetyLimiter {
         &mut self,
         _bus_config: &BusConfig,
         buffer_config: &BufferConfig,
-        _context: &mut impl InitContext,
+        _context: &mut impl InitContext<Self>,
     ) -> bool {
         self.buffer_config = *buffer_config;
         self.morse_fadeout_samples_start =
@@ -197,7 +199,7 @@ impl Plugin for SafetyLimiter {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext,
+        _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         // Don't do anything when bouncing
         if self.buffer_config.process_mode == ProcessMode::Offline {

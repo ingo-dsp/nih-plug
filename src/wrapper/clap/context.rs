@@ -2,18 +2,15 @@ use atomic_refcell::AtomicRefMut;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use super::wrapper::{OutputParamEvent, Wrapper};
-use crate::context::{GuiContext, InitContext, PluginApi, ProcessContext, Transport};
+use super::wrapper::{OutputParamEvent, Task, Wrapper};
+use crate::context::gui::GuiContext;
+use crate::context::init::InitContext;
+use crate::context::process::{ProcessContext, Transport};
+use crate::context::PluginApi;
+use crate::event_loop::EventLoop;
 use crate::midi::NoteEvent;
-use crate::param::internals::ParamPtr;
+use crate::params::internals::ParamPtr;
 use crate::plugin::ClapPlugin;
-
-/// A [`GuiContext`] implementation for the wrapper. This is passed to the plugin in
-/// [`Editor::spawn()`][crate::prelude::Editor::spawn()] so it can interact with the rest of the plugin and
-/// with the host for things like setting parameters.
-pub(crate) struct WrapperGuiContext<P: ClapPlugin> {
-    pub(super) wrapper: Arc<Wrapper<P>>,
-}
 
 /// A [`InitContext`] implementation for the wrapper. This is a separate object so it can hold on
 /// to lock guards for event queues. Otherwise reading these events would require constant
@@ -30,6 +27,68 @@ pub(crate) struct WrapperProcessContext<'a, P: ClapPlugin> {
     pub(super) input_events_guard: AtomicRefMut<'a, VecDeque<NoteEvent>>,
     pub(super) output_events_guard: AtomicRefMut<'a, VecDeque<NoteEvent>>,
     pub(super) transport: Transport,
+}
+
+/// A [`GuiContext`] implementation for the wrapper. This is passed to the plugin in
+/// [`Editor::spawn()`][crate::prelude::Editor::spawn()] so it can interact with the rest of the plugin and
+/// with the host for things like setting parameters.
+pub(crate) struct WrapperGuiContext<P: ClapPlugin> {
+    pub(super) wrapper: Arc<Wrapper<P>>,
+}
+
+impl<P: ClapPlugin> InitContext<P> for WrapperInitContext<'_, P> {
+    fn plugin_api(&self) -> PluginApi {
+        PluginApi::Clap
+    }
+
+    fn execute(&self, task: P::BackgroundTask) {
+        (self.wrapper.task_executor.lock())(task);
+    }
+
+    fn set_latency_samples(&self, samples: u32) {
+        self.wrapper.set_latency_samples(samples)
+    }
+
+    fn set_current_voice_capacity(&self, capacity: u32) {
+        self.wrapper.set_current_voice_capacity(capacity)
+    }
+}
+
+impl<P: ClapPlugin> ProcessContext<P> for WrapperProcessContext<'_, P> {
+    fn plugin_api(&self) -> PluginApi {
+        PluginApi::Clap
+    }
+
+    fn execute_background(&self, task: P::BackgroundTask) {
+        let task_posted = self.wrapper.schedule_background(Task::PluginTask(task));
+        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+    }
+
+    fn execute_gui(&self, task: P::BackgroundTask) {
+        let task_posted = self.wrapper.schedule_gui(Task::PluginTask(task));
+        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+    }
+
+    #[inline]
+    fn transport(&self) -> &Transport {
+        &self.transport
+    }
+
+    fn next_event(&mut self) -> Option<NoteEvent> {
+        self.input_events_guard.pop_front()
+    }
+
+    fn send_event(&mut self, event: NoteEvent) {
+        self.output_events_guard.push_back(event);
+    }
+
+    fn set_latency_samples(&self, samples: u32) {
+        self.wrapper.set_latency_samples(samples)
+    }
+
+    fn set_current_voice_capacity(&self, capacity: u32) {
+        self.wrapper.set_current_voice_capacity(capacity)
+    }
 }
 
 impl<P: ClapPlugin> GuiContext for WrapperGuiContext<P> {
@@ -109,46 +168,5 @@ impl<P: ClapPlugin> GuiContext for WrapperGuiContext<P> {
 
     fn set_state(&self, state: crate::wrapper::state::PluginState) {
         self.wrapper.set_state_object(state)
-    }
-}
-
-impl<P: ClapPlugin> InitContext for WrapperInitContext<'_, P> {
-    fn plugin_api(&self) -> PluginApi {
-        PluginApi::Clap
-    }
-
-    fn set_latency_samples(&self, samples: u32) {
-        self.wrapper.set_latency_samples(samples)
-    }
-
-    fn set_current_voice_capacity(&self, capacity: u32) {
-        self.wrapper.set_current_voice_capacity(capacity)
-    }
-}
-
-impl<P: ClapPlugin> ProcessContext for WrapperProcessContext<'_, P> {
-    fn plugin_api(&self) -> PluginApi {
-        PluginApi::Clap
-    }
-
-    #[inline]
-    fn transport(&self) -> &Transport {
-        &self.transport
-    }
-
-    fn next_event(&mut self) -> Option<NoteEvent> {
-        self.input_events_guard.pop_front()
-    }
-
-    fn send_event(&mut self, event: NoteEvent) {
-        self.output_events_guard.push_back(event);
-    }
-
-    fn set_latency_samples(&self, samples: u32) {
-        self.wrapper.set_latency_samples(samples)
-    }
-
-    fn set_current_voice_capacity(&self, capacity: u32) {
-        self.wrapper.set_current_voice_capacity(capacity)
     }
 }

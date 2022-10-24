@@ -24,9 +24,9 @@ use super::util::{
 };
 use super::view::WrapperView;
 use crate::buffer::Buffer;
-use crate::context::Transport;
+use crate::context::process::Transport;
 use crate::midi::{MidiConfig, NoteEvent};
-use crate::param::ParamFlags;
+use crate::params::ParamFlags;
 use crate::plugin::{
     AuxiliaryBuffers, AuxiliaryIOConfig, BufferConfig, BusConfig, ProcessMode, ProcessStatus,
     Vst3Plugin,
@@ -389,7 +389,7 @@ impl<P: Vst3Plugin> IComponent for Wrapper<P> {
                 }
 
                 let bus_config = self.inner.current_bus_config.load();
-                let mut plugin = self.inner.plugin.write();
+                let mut plugin = self.inner.plugin.lock();
                 if plugin.initialize(
                     &bus_config,
                     &buffer_config,
@@ -461,7 +461,7 @@ impl<P: Vst3Plugin> IComponent for Wrapper<P> {
             }
             (true, None) => kResultFalse,
             (false, _) => {
-                self.inner.plugin.write().deactivate();
+                self.inner.plugin.lock().deactivate();
 
                 kResultOk
             }
@@ -504,7 +504,7 @@ impl<P: Vst3Plugin> IComponent for Wrapper<P> {
             return kResultFalse;
         }
 
-        let success = state::deserialize_json(
+        let success = state::deserialize_json::<P>(
             &read_buffer,
             self.inner.params.clone(),
             state::make_params_getter(&self.inner.param_by_hash, &self.inner.param_id_to_hash),
@@ -519,7 +519,7 @@ impl<P: Vst3Plugin> IComponent for Wrapper<P> {
 
         let bus_config = self.inner.current_bus_config.load();
         if let Some(buffer_config) = self.inner.current_buffer_config.load() {
-            let mut plugin = self.inner.plugin.write();
+            let mut plugin = self.inner.plugin.lock();
             plugin.initialize(
                 &bus_config,
                 &buffer_config,
@@ -771,7 +771,7 @@ impl<P: Vst3Plugin> IEditController for Wrapper<P> {
     unsafe fn create_view(&self, _name: vst3_sys::base::FIDString) -> *mut c_void {
         // Without specialization this is the least redundant way to check if the plugin has an
         // editor. The default implementation returns a None here.
-        match &self.inner.editor {
+        match self.inner.editor.borrow().as_ref() {
             Some(editor) => Box::into_raw(WrapperView::new(self.inner.clone(), editor.clone()))
                 as *mut vst3_sys::c_void,
             None => ptr::null_mut(),
@@ -864,7 +864,7 @@ impl<P: Vst3Plugin> IAudioProcessor for Wrapper<P> {
         if self
             .inner
             .plugin
-            .read()
+            .lock()
             .accepts_bus_config(&proposed_config)
         {
             self.inner.current_bus_config.store(proposed_config);
@@ -1001,7 +1001,7 @@ impl<P: Vst3Plugin> IAudioProcessor for Wrapper<P> {
         // This function is also used to reset buffers on the plugin, so we should do the same
         // thing. We don't call `reset()` in `setup_processing()` for that same reason.
         if state {
-            process_wrapper(|| self.inner.plugin.write().reset());
+            process_wrapper(|| self.inner.plugin.lock().reset());
         }
 
         // We don't have any special handling for suspending and resuming plugins, yet
@@ -1530,7 +1530,7 @@ impl<P: Vst3Plugin> IAudioProcessor for Wrapper<P> {
                 }
 
                 let result = if buffer_is_valid {
-                    let mut plugin = self.inner.plugin.write();
+                    let mut plugin = self.inner.plugin.lock();
                     // SAFETY: Shortening these borrows is safe as even if the plugin overwrites the
                     //         slices (which it cannot do without using unsafe code), then they
                     //         would still be reset on the next iteration
@@ -1769,9 +1769,9 @@ impl<P: Vst3Plugin> IAudioProcessor for Wrapper<P> {
             // FIXME: Zero capacity channels allocate on receiving, find a better alternative that
             //        doesn't do that
             let updated_state = permit_alloc(|| self.inner.updated_state_receiver.try_recv());
-            if let Ok(state) = updated_state {
-                state::deserialize_object(
-                    &state,
+            if let Ok(mut state) = updated_state {
+                state::deserialize_object::<P>(
+                    &mut state,
                     self.inner.params.clone(),
                     state::make_params_getter(
                         &self.inner.param_by_hash,
@@ -1784,7 +1784,7 @@ impl<P: Vst3Plugin> IAudioProcessor for Wrapper<P> {
 
                 let bus_config = self.inner.current_bus_config.load();
                 let buffer_config = self.inner.current_buffer_config.load().unwrap();
-                let mut plugin = self.inner.plugin.write();
+                let mut plugin = self.inner.plugin.lock();
                 // FIXME: This is obviously not realtime-safe, but loading presets without doing
                 //         this could lead to inconsistencies. It's the plugin's responsibility to
                 //         not perform any realtime-unsafe work when the initialize function is

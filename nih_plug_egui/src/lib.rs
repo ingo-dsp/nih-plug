@@ -12,7 +12,7 @@ use baseview::{Size, WindowHandle, WindowOpenOptions, WindowScalePolicy};
 use crossbeam::atomic::AtomicCell;
 use egui::{Context, Event, Key, Modifiers, RawInput, Vec2};
 use egui_baseview::{EguiWindow, is_copy_command, is_cut_command, is_paste_command, translate_virtual_key_code};
-use nih_plug::param::internals::PersistentField;
+use nih_plug::params::persist::PersistentField;
 use nih_plug::prelude::{Editor, GuiContext, ParamSetter, ParentWindowHandle};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ compile_error!("There's currently no software rendering support for egui");
 
 /// Re-export for convenience.
 pub use egui;
-use nih_plug::plugin::SpawnedWindow;
+use nih_plug::editor::SpawnedWindow;
 
 pub mod widgets;
 
@@ -39,18 +39,21 @@ pub mod widgets;
 /// field on your parameters struct.
 ///
 /// See [`EguiState::from_size()`].
-pub fn create_egui_editor<T, U>(
+pub fn create_egui_editor<T, B, U>(
     egui_state: Arc<EguiState>,
     user_state: T,
+    build: B,
     update: U,
 ) -> Option<Box<dyn Editor>>
 where
     T: 'static + Send + Sync,
+    B: Fn(&Context, &mut T) + 'static + Send + Sync,
     U: Fn(&Context, &ParamSetter, &mut T) + 'static + Send + Sync,
 {
     Some(Box::new(EguiEditor {
         egui_state,
         user_state: Arc::new(RwLock::new(user_state)),
+        build: Arc::new(build),
         update: Arc::new(update),
 
         // TODO: We can't get the size of the window when baseview does its own scaling, so if the
@@ -90,7 +93,7 @@ impl AcceptableKeys {
 #[derive(Serialize, Deserialize)]
 pub struct EguiState {
     /// The window's size in logical pixels before applying `scale_factor`.
-    #[serde(with = "nih_plug::param::internals::serialize_atomic_cell")]
+    #[serde(with = "nih_plug::params::persist::serialize_atomic_cell")]
     size: AtomicCell<(u32, u32)>,
     /// Whether the editor's window is currently open.
     #[serde(skip)]
@@ -146,6 +149,9 @@ struct EguiEditor<T> {
     egui_state: Arc<EguiState>,
     /// The plugin's state. This is kept in between editor openenings.
     user_state: Arc<RwLock<T>>,
+
+    /// The user's build function. Applied once at the start of the application.
+    build: Arc<dyn Fn(&Context, &mut T) + 'static + Send + Sync>,
     /// The user's update function.
     update: Arc<dyn Fn(&Context, &ParamSetter, &mut T) + 'static + Send + Sync>,
 
@@ -168,7 +174,8 @@ where
         parent: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
         request_keyboard_focus: bool
-    ) -> Box<dyn SpawnedWindow + Send + Sync> {
+    ) -> Box<dyn SpawnedWindow + Send> {
+        let build = self.build.clone();
         let update = self.update.clone();
         let state = self.user_state.clone();
         let plugin_keyboard_events = self.plugin_keyboard_events.clone();
@@ -204,7 +211,7 @@ where
                 }),
             },
             state,
-            |_, _, _| {},
+            move |egui_ctx, _queue, state| build(egui_ctx, &mut state.write()),
             move |egui_ctx, _queue, state| {
                 if let Ok(mut plugin_keyboard_events) = plugin_keyboard_events.try_lock() {
                     let mut events = vec![];
@@ -375,7 +382,6 @@ impl SpawnedWindow for EguiEditorHandle {
 /// The window handle enum stored within 'WindowHandle' contains raw pointers. Is there a way around
 /// having this requirement?
 unsafe impl Send for EguiEditorHandle {}
-unsafe impl Sync for EguiEditorHandle {}
 
 impl Drop for EguiEditorHandle {
     fn drop(&mut self) {

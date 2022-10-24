@@ -5,7 +5,7 @@
 
 use baseview::{WindowHandle, WindowScalePolicy};
 use crossbeam::atomic::AtomicCell;
-use nih_plug::param::internals::PersistentField;
+use nih_plug::params::persist::PersistentField;
 use nih_plug::prelude::{Editor, GuiContext, ParentWindowHandle};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -77,11 +77,11 @@ where
 #[derive(Serialize, Deserialize)]
 pub struct ViziaState {
     /// The window's size in logical pixels before applying `scale_factor`.
-    #[serde(with = "nih_plug::param::internals::serialize_atomic_cell")]
+    #[serde(with = "nih_plug::params::persist::serialize_atomic_cell")]
     size: AtomicCell<(u32, u32)>,
     /// A scale factor that should be applied to `size` separate from from any system HiDPI scaling.
     /// This can be used to allow GUIs to be scaled uniformly.
-    #[serde(with = "nih_plug::param::internals::serialize_atomic_cell")]
+    #[serde(with = "nih_plug::params::persist::serialize_atomic_cell")]
     scale_factor: AtomicCell<f64>,
     /// Whether the editor's window is currently open.
     #[serde(skip)]
@@ -174,7 +174,7 @@ impl Editor for ViziaEditor {
         &self,
         parent: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
-    ) -> Box<dyn std::any::Any + Send + Sync> {
+    ) -> Box<dyn std::any::Any + Send> {
         let app = self.app.clone();
         let vizia_state = self.vizia_state.clone();
         let apply_theming = self.apply_theming;
@@ -258,7 +258,6 @@ struct ViziaEditorHandle {
 /// The window handle enum stored within 'WindowHandle' contains raw pointers. Is there a way around
 /// having this requirement?
 unsafe impl Send for ViziaEditorHandle {}
-unsafe impl Sync for ViziaEditorHandle {}
 
 impl Drop for ViziaEditorHandle {
     fn drop(&mut self) {

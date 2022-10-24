@@ -123,6 +123,8 @@ impl Plugin for LoudnessWarWinner {
     const DEFAULT_INPUT_CHANNELS: u32 = 2;
     const DEFAULT_OUTPUT_CHANNELS: u32 = 2;
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
@@ -135,7 +137,7 @@ impl Plugin for LoudnessWarWinner {
         &mut self,
         bus_config: &BusConfig,
         buffer_config: &BufferConfig,
-        _context: &mut impl InitContext,
+        _context: &mut impl InitContext<Self>,
     ) -> bool {
         self.sample_rate = buffer_config.sample_rate;
 
@@ -171,7 +173,7 @@ impl Plugin for LoudnessWarWinner {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext,
+        _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         for mut channel_samples in buffer.iter_samples() {
             let output_gain = self.params.output_gain.smoothed.next();

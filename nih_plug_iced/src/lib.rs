@@ -92,7 +92,7 @@
 use baseview::{WindowOpenOptions, WindowScalePolicy};
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel;
-use nih_plug::param::internals::PersistentField;
+use nih_plug::params::persist::PersistentField;
 use nih_plug::prelude::{Editor, GuiContext, ParentWindowHandle};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -235,7 +235,7 @@ pub trait IcedEditor: 'static + Send + Sync + Sized {
 #[derive(Serialize, Deserialize)]
 pub struct IcedState {
     /// The window's size in logical pixels before applying `scale_factor`.
-    #[serde(with = "nih_plug::param::internals::serialize_atomic_cell")]
+    #[serde(with = "nih_plug::params::persist::serialize_atomic_cell")]
     size: AtomicCell<(u32, u32)>,
     /// Whether the editor's window is currently open.
     #[serde(skip)]
@@ -299,7 +299,7 @@ impl<E: IcedEditor> Editor for IcedEditorWrapper<E> {
         &self,
         parent: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
-    ) -> Box<dyn std::any::Any + Send + Sync> {
+    ) -> Box<dyn std::any::Any + Send> {
         let (unscaled_width, unscaled_height) = self.iced_state.size();
         let scaling_factor = self.scaling_factor.load();
 
@@ -389,7 +389,6 @@ struct IcedEditorHandle<Message: 'static + Send> {
 /// The window handle enum stored within 'WindowHandle' contains raw pointers. Is there a way around
 /// having this requirement?
 unsafe impl<Message: Send> Send for IcedEditorHandle<Message> {}
-unsafe impl<Message: Send> Sync for IcedEditorHandle<Message> {}
 
 impl<Message: Send> Drop for IcedEditorHandle<Message> {
     fn drop(&mut self) {

@@ -59,7 +59,7 @@ use clap_sys::stream::{clap_istream, clap_ostream};
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::{self, SendTimeoutError};
 use crossbeam::queue::ArrayQueue;
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 use raw_window_handle::RawWindowHandle;
 use std::any::Any;
 use std::cmp;
@@ -77,14 +77,16 @@ use super::context::{WrapperGuiContext, WrapperInitContext, WrapperProcessContex
 use super::descriptor::PluginDescriptor;
 use super::util::ClapPtr;
 use crate::buffer::Buffer;
-use crate::context::Transport;
-use crate::event_loop::{EventLoop, MainThreadExecutor, TASK_QUEUE_CAPACITY};
+use crate::context::gui::AsyncExecutor;
+use crate::context::process::Transport;
+use crate::editor::{Editor, ParentWindowHandle, SpawnedWindow};
+use crate::event_loop::{BackgroundThread, EventLoop, MainThreadExecutor, TASK_QUEUE_CAPACITY};
 use crate::midi::{MidiConfig, NoteEvent};
-use crate::param::internals::{ParamPtr, Params};
-use crate::param::ParamFlags;
+use crate::params::internals::ParamPtr;
+use crate::params::{ParamFlags, Params};
 use crate::plugin::{
-    AuxiliaryBuffers, BufferConfig, BusConfig, ClapPlugin, Editor, ParentWindowHandle, ProcessMode,
-    ProcessStatus, SpawnedWindow,
+    AuxiliaryBuffers, BufferConfig, BusConfig, ClapPlugin, Plugin, ProcessMode, ProcessStatus,
+    TaskExecutor,
 };
 use crate::util::permit_alloc;
 use crate::wrapper::clap::util::{read_stream, write_stream};
@@ -104,18 +106,20 @@ pub struct Wrapper<P: ClapPlugin> {
     this: AtomicRefCell<Weak<Self>>,
 
     /// The wrapped plugin instance.
-    plugin: RwLock<P>,
+    plugin: Mutex<P>,
+    /// The plugin's background task executor closure.
+    pub task_executor: Mutex<TaskExecutor<P>>,
     /// The plugin's parameters. These are fetched once during initialization. That way the
     /// `ParamPtr`s are guaranteed to live at least as long as this object and we can interact with
     /// the `Params` object without having to acquire a lock on `plugin`.
     params: Arc<dyn Params>,
     /// The plugin's editor, if it has one. This object does not do anything on its own, but we need
     /// to instantiate this in advance so we don't need to lock the entire [`Plugin`] object when
-    /// creating an editor.
-    editor: Option<Box<dyn Editor>>,
+    /// creating an editor. Wrapped in an `AtomicRefCell` because it needs to be initialized late.
+    editor: AtomicRefCell<Option<Mutex<Box<dyn Editor>>>>,
     /// A handle for the currently active editor instance. The plugin should implement `Drop` on
     /// this handle for its closing behavior.
-    editor_handle: RwLock<Option<Box<dyn SpawnedWindow + Send + Sync>>>,
+    editor_handle: Mutex<Option<Box<dyn SpawnedWindow + Send>>>,
     /// The DPI scaling factor as passed to the [IPlugViewContentScaleSupport::set_scale_factor()]
     /// function. Defaults to 1.0, and will be kept there on macOS. When reporting and handling size
     /// the sizes communicated to and from the DAW should be scaled by this factor since NIH-plug's
@@ -255,19 +259,24 @@ pub struct Wrapper<P: ClapPlugin> {
     /// implementations. Instead, we'll post tasks to this queue, ask the host to call
     /// [`on_main_thread()`][Self::on_main_thread()] on the main thread, and then continue to pop
     /// tasks off this queue there until it is empty.
-    tasks: ArrayQueue<Task>,
+    tasks: ArrayQueue<Task<P>>,
     /// The ID of the main thread. In practice this is the ID of the thread that created this
     /// object. If the host supports the thread check extension (and
     /// [`host_thread_check`][Self::host_thread_check] thus contains a value), then that extension
     /// is used instead.
     main_thread_id: ThreadId,
+    /// A background thread for running tasks independently from the host'main GUI thread. Useful
+    /// for longer, blocking tasks. Initialized later as it needs a reference to the wrapper.
+    background_thread: AtomicRefCell<Option<BackgroundThread<Task<P>>>>,
 }
 
 /// Tasks that can be sent from the plugin to be executed on the main thread in a non-blocking
 /// realtime-safe way. Instead of using a random thread or the OS' event loop like in the Linux
 /// implementation, this uses [`clap_host::request_callback()`] instead.
-#[derive(Debug)]
-pub enum Task {
+#[allow(clippy::enum_variant_names)]
+pub enum Task<P: Plugin> {
+    /// Execute one of the plugin's background tasks.
+    PluginTask(P::BackgroundTask),
     /// Inform the host that the latency has changed.
     LatencyChanged,
     /// Inform the host that the voice info has changed.
@@ -299,7 +308,7 @@ pub enum OutputParamEvent {
         /// The internal hash for the parameter.
         param_hash: u32,
         /// The 'plain' value as reported to CLAP. This is the normalized value multiplied by
-        /// [`Param::step_size()`][crate::Param::step_size()].
+        /// [`params::step_size()`][crate::params::step_size()].
         clap_plain_value: f64,
     },
     /// Begin an automation gesture. This must always be sent after sending one or more [`SetValue`]
@@ -309,14 +318,14 @@ pub enum OutputParamEvent {
 
 /// Because CLAP has this [`clap_host::request_host_callback()`] function, we don't need to use
 /// `OsEventLoop` and can instead just request a main thread callback directly.
-impl<P: ClapPlugin> EventLoop<Task, Wrapper<P>> for Wrapper<P> {
-    fn new_and_spawn(_executor: std::sync::Weak<Self>) -> Self {
+impl<P: ClapPlugin> EventLoop<Task<P>, Wrapper<P>> for Wrapper<P> {
+    fn new_and_spawn(_executor: std::sync::Arc<Self>) -> Self {
         panic!("What are you doing");
     }
 
-    fn do_maybe_async(&self, task: Task) -> bool {
+    fn schedule_gui(&self, task: Task<P>) -> bool {
         if self.is_main_thread() {
-            unsafe { self.execute(task) };
+            self.execute(task, true);
             true
         } else {
             let success = self.tasks.push(task).is_ok();
@@ -328,6 +337,14 @@ impl<P: ClapPlugin> EventLoop<Task, Wrapper<P>> for Wrapper<P> {
 
             success
         }
+    }
+
+    fn schedule_background(&self, task: Task<P>) -> bool {
+        self.background_thread
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .schedule(task)
     }
 
     fn is_main_thread(&self) -> bool {
@@ -344,33 +361,38 @@ impl<P: ClapPlugin> EventLoop<Task, Wrapper<P>> for Wrapper<P> {
     }
 }
 
-impl<P: ClapPlugin> MainThreadExecutor<Task> for Wrapper<P> {
-    unsafe fn execute(&self, task: Task) {
+impl<P: ClapPlugin> MainThreadExecutor<Task<P>> for Wrapper<P> {
+    fn execute(&self, task: Task<P>, is_gui_thread: bool) {
         // This function is always called from the main thread, from [Self::on_main_thread].
         match task {
+            Task::PluginTask(task) => (self.task_executor.lock())(task),
             Task::LatencyChanged => match &*self.host_latency.borrow() {
                 Some(host_latency) => {
+                    nih_debug_assert!(is_gui_thread);
+
                     // XXX: The CLAP docs mention that you should request a restart if this happens
                     //      while the plugin is activated (which is not entirely the same thing as
                     //      is processing, but we'll treat it as the same thing). In practice just
                     //      calling the latency changed function also seems to work just fine.
                     if self.is_processing.load(Ordering::SeqCst) {
-                        clap_call! { &*self.host_callback=>request_restart(&*self.host_callback) };
+                        unsafe_clap_call! { &*self.host_callback=>request_restart(&*self.host_callback) };
                     } else {
-                        clap_call! { host_latency=>changed(&*self.host_callback) };
+                        unsafe_clap_call! { host_latency=>changed(&*self.host_callback) };
                     }
                 }
                 None => nih_debug_assert_failure!("Host does not support the latency extension"),
             },
             Task::VoiceInfoChanged => match &*self.host_voice_info.borrow() {
                 Some(host_voice_info) => {
-                    clap_call! { host_voice_info=>changed(&*self.host_callback) };
+                    nih_debug_assert!(is_gui_thread);
+                    unsafe_clap_call! { host_voice_info=>changed(&*self.host_callback) };
                 }
                 None => nih_debug_assert_failure!("Host does not support the voice-info extension"),
             },
             Task::RescanParamValues => match &*self.host_params.borrow() {
                 Some(host_params) => {
-                    clap_call! { host_params=>rescan(&*self.host_callback, CLAP_PARAM_RESCAN_VALUES) };
+                    nih_debug_assert!(is_gui_thread);
+                    unsafe_clap_call! { host_params=>rescan(&*self.host_callback, CLAP_PARAM_RESCAN_VALUES) };
                 }
                 None => nih_debug_assert_failure!("The host does not support parameters? What?"),
             },
@@ -381,7 +403,7 @@ impl<P: ClapPlugin> MainThreadExecutor<Task> for Wrapper<P> {
 impl<P: ClapPlugin> Wrapper<P> {
     pub fn new(host_callback: *const clap_host) -> Arc<Self> {
         let plugin = P::default();
-        let editor = plugin.editor();
+        let task_executor = Mutex::new(plugin.task_executor());
 
         // This is used to allow the plugin to restore preset data from its editor, see the comment
         // on `Self::updated_state_sender`
@@ -541,10 +563,12 @@ impl<P: ClapPlugin> Wrapper<P> {
 
             this: AtomicRefCell::new(Weak::new()),
 
-            plugin: RwLock::new(plugin),
+            plugin: Mutex::new(plugin),
+            task_executor,
             params,
-            editor,
-            editor_handle: RwLock::new(None),
+            // Initialized later as it needs a reference to the wrapper for the async executor
+            editor: AtomicRefCell::new(None),
+            editor_handle: Mutex::new(None),
             editor_scaling_factor: AtomicF32::new(1.0),
 
             is_processing: AtomicBool::new(false),
@@ -663,12 +687,42 @@ impl<P: ClapPlugin> Wrapper<P> {
 
             tasks: ArrayQueue::new(TASK_QUEUE_CAPACITY),
             main_thread_id: thread::current().id(),
+            // Initialized later as it needs a reference to the wrapper for the executor
+            background_thread: AtomicRefCell::new(None),
         };
 
         // Finally, the wrapper needs to contain a reference to itself so we can create GuiContexts
         // when opening plugin editors
         let wrapper = Arc::new(wrapper);
         *wrapper.this.borrow_mut() = Arc::downgrade(&wrapper);
+
+        // The editor also needs to be initialized later so the Async executor can work.
+        *wrapper.editor.borrow_mut() = wrapper
+            .plugin
+            .lock()
+            .editor(AsyncExecutor {
+                execute_background: Arc::new({
+                    let wrapper = wrapper.clone();
+
+                    move |task| {
+                        let task_posted = wrapper.schedule_background(Task::PluginTask(task));
+                        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+                    }
+                }),
+                execute_gui: Arc::new({
+                    let wrapper = wrapper.clone();
+
+                    move |task| {
+                        let task_posted = wrapper.schedule_gui(Task::PluginTask(task));
+                        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+                    }
+                }),
+            })
+            .map(Mutex::new);
+
+        // Same with the background thread
+        *wrapper.background_thread.borrow_mut() =
+            Some(BackgroundThread::new_and_spawn(wrapper.clone()));
 
         wrapper
     }
@@ -713,10 +767,18 @@ impl<P: ClapPlugin> Wrapper<P> {
 
     /// If there's an editor open, let it know that parameter values have changed. This should be
     /// called whenever there's been a call or multiple calls to
-    /// [`update_plain_value_by_hash()[Self::update_plain_value_by_hash()`].
+    /// [`update_plain_value_by_hash()[Self::update_plain_value_by_hash()`]. In the off-chance that
+    /// the editor instance is currently locked then nothing will happen, and the request can safely
+    /// be ignored.
     pub fn notify_param_values_changed(&self) {
-        if let Some(editor) = &self.editor {
-            editor.param_values_changed();
+        if let Some(editor) = self.editor.borrow().as_ref() {
+            match editor.try_lock() {
+                Some(editor) => editor.param_values_changed(),
+                None => nih_debug_assert_failure!(
+                    "The editor was locked when sending a parameter value change notification, \
+                     ignoring"
+                ),
+            }
         }
     }
 
@@ -724,9 +786,12 @@ impl<P: ClapPlugin> Wrapper<P> {
     /// safely be called from any thread. If this returns `false`, then the plugin should reset its
     /// size back to the previous value.
     pub fn request_resize(&self) -> bool {
-        match (&*self.host_gui.borrow(), &self.editor) {
+        match (
+            self.host_gui.borrow().as_ref(),
+            self.editor.borrow().as_ref(),
+        ) {
             (Some(host_gui), Some(editor)) => {
-                let (unscaled_width, unscaled_height) = editor.size();
+                let (unscaled_width, unscaled_height) = editor.lock().size();
                 let scaling_factor = self.editor_scaling_factor.load(Ordering::Relaxed);
 
                 unsafe_clap_call! {
@@ -1588,8 +1653,8 @@ impl<P: ClapPlugin> Wrapper<P> {
                 // Otherwise we'll set the state right here and now, since this function should be
                 // called from a GUI thread
                 unsafe {
-                    state::deserialize_object(
-                        &state,
+                    state::deserialize_object::<P>(
+                        &mut state,
                         self.params.clone(),
                         state::make_params_getter(&self.param_by_hash, &self.param_id_to_hash),
                         self.current_buffer_config.load().as_ref(),
@@ -1599,7 +1664,7 @@ impl<P: ClapPlugin> Wrapper<P> {
                 self.notify_param_values_changed();
                 let bus_config = self.current_bus_config.load();
                 if let Some(buffer_config) = self.current_buffer_config.load() {
-                    let mut plugin = self.plugin.write();
+                    let mut plugin = self.plugin.lock();
                     plugin.initialize(&bus_config, &buffer_config, &mut self.make_init_context());
                     process_wrapper(|| plugin.reset());
                 }
@@ -1609,7 +1674,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         }
 
         // After the state has been updated, notify the host about the new parameter values
-        let task_posted = self.do_maybe_async(Task::RescanParamValues);
+        let task_posted = self.schedule_gui(Task::RescanParamValues);
         nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
     }
 
@@ -1619,7 +1684,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         //      to keep doing it this way to stay consistent with VST3.
         let old_latency = self.current_latency.swap(samples, Ordering::SeqCst);
         if old_latency != samples {
-            let task_posted = self.do_maybe_async(Task::LatencyChanged);
+            let task_posted = self.schedule_gui(Task::LatencyChanged);
             nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
         }
     }
@@ -1637,7 +1702,7 @@ impl<P: ClapPlugin> Wrapper<P> {
                 if clamped_capacity != self.current_voice_capacity.load(Ordering::Relaxed) {
                     self.current_voice_capacity
                         .store(clamped_capacity, Ordering::Relaxed);
-                    let task_posted = self.do_maybe_async(Task::VoiceInfoChanged);
+                    let task_posted = self.schedule_gui(Task::VoiceInfoChanged);
                     nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
                 }
             }
@@ -1672,7 +1737,7 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn destroy(plugin: *const clap_plugin) {
-        Arc::from_raw(plugin as *mut Self);
+        drop(Arc::from_raw(plugin as *mut Self));
     }
 
     unsafe extern "C" fn activate(
@@ -1697,7 +1762,7 @@ impl<P: ClapPlugin> Wrapper<P> {
             param.update_smoother(buffer_config.sample_rate, true);
         }
 
-        let mut plugin = wrapper.plugin.write();
+        let mut plugin = wrapper.plugin.lock();
         if plugin.initialize(
             &bus_config,
             &buffer_config,
@@ -1771,7 +1836,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         check_null_ptr!((), plugin);
         let wrapper = &*(plugin as *const Self);
 
-        wrapper.plugin.write().deactivate();
+        wrapper.plugin.lock().deactivate();
     }
 
     unsafe extern "C" fn start_processing(plugin: *const clap_plugin) -> bool {
@@ -1786,7 +1851,7 @@ impl<P: ClapPlugin> Wrapper<P> {
 
         // To be consistent with the VST3 wrapper, we'll also reset the buffers here in addition to
         // the dedicated `reset()` function.
-        process_wrapper(|| wrapper.plugin.write().reset());
+        process_wrapper(|| wrapper.plugin.lock().reset());
 
         true
     }
@@ -1802,7 +1867,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         check_null_ptr!((), plugin);
         let wrapper = &*(plugin as *const Self);
 
-        process_wrapper(|| wrapper.plugin.write().reset());
+        process_wrapper(|| wrapper.plugin.lock().reset());
     }
 
     unsafe extern "C" fn process(
@@ -2181,7 +2246,7 @@ impl<P: ClapPlugin> Wrapper<P> {
                 }
 
                 let result = if buffer_is_valid {
-                    let mut plugin = wrapper.plugin.write();
+                    let mut plugin = wrapper.plugin.lock();
                     // SAFETY: Shortening these borrows is safe as even if the plugin overwrites the
                     //         slices (which it cannot do without using unsafe code), then they
                     //         would still be reset on the next iteration
@@ -2231,9 +2296,9 @@ impl<P: ClapPlugin> Wrapper<P> {
             // FIXME: Zero capacity channels allocate on receiving, find a better alternative that
             //        doesn't do that
             let updated_state = permit_alloc(|| wrapper.updated_state_receiver.try_recv());
-            if let Ok(state) = updated_state {
-                state::deserialize_object(
-                    &state,
+            if let Ok(mut state) = updated_state {
+                state::deserialize_object::<P>(
+                    &mut state,
                     wrapper.params.clone(),
                     state::make_params_getter(&wrapper.param_by_hash, &wrapper.param_id_to_hash),
                     wrapper.current_buffer_config.load().as_ref(),
@@ -2243,7 +2308,7 @@ impl<P: ClapPlugin> Wrapper<P> {
 
                 let bus_config = wrapper.current_bus_config.load();
                 let buffer_config = wrapper.current_buffer_config.load().unwrap();
-                let mut plugin = wrapper.plugin.write();
+                let mut plugin = wrapper.plugin.lock();
                 // FIXME: This is obviously not realtime-safe, but loading presets without doing
                 //         this could lead to inconsistencies. It's the plugin's responsibility to
                 //         not perform any realtime-unsafe work when the initialize function is
@@ -2284,7 +2349,7 @@ impl<P: ClapPlugin> Wrapper<P> {
             &wrapper.clap_plugin_audio_ports_config as *const _ as *const c_void
         } else if id == CLAP_EXT_AUDIO_PORTS {
             &wrapper.clap_plugin_audio_ports as *const _ as *const c_void
-        } else if id == CLAP_EXT_GUI && wrapper.editor.is_some() {
+        } else if id == CLAP_EXT_GUI && wrapper.editor.borrow().is_some() {
             // Only report that we support this extension if the plugin has an editor
             &wrapper.clap_plugin_gui as *const _ as *const c_void
         } else if id == CLAP_EXT_LATENCY {
@@ -2313,10 +2378,10 @@ impl<P: ClapPlugin> Wrapper<P> {
         check_null_ptr!((), plugin);
         let wrapper = &*(plugin as *const Self);
 
-        // [Self::do_maybe_async] posts a task to the queue and asks the host to call this function
+        // [Self::schedule_gui] posts a task to the queue and asks the host to call this function
         // on the main thread, so once that's done we can just handle all requests here
         while let Some(task) = wrapper.tasks.pop() {
-            wrapper.execute(task);
+            wrapper.execute(task, true);
         }
     }
 
@@ -2637,7 +2702,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         check_null_ptr!(false, plugin);
         let wrapper = &*(plugin as *const Self);
 
-        let editor_handle = wrapper.editor_handle.read();
+        let editor_handle = wrapper.editor_handle.lock();
         if editor_handle.is_none() {
             true
         } else {
@@ -2650,7 +2715,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         check_null_ptr!((), plugin);
         let wrapper = &*(plugin as *const Self);
 
-        let mut editor_handle = wrapper.editor_handle.write();
+        let mut editor_handle = wrapper.editor_handle.lock();
         if editor_handle.is_some() {
             *editor_handle = None;
         } else {
@@ -2670,8 +2735,10 @@ impl<P: ClapPlugin> Wrapper<P> {
 
         if wrapper
             .editor
+            .borrow()
             .as_ref()
             .unwrap()
+            .lock()
             .set_scale_factor(scale as f32)
         {
             wrapper
@@ -2692,7 +2759,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         let wrapper = &*(plugin as *const Self);
 
         // For macOS the scaling factor is always 1
-        let (unscaled_width, unscaled_height) = wrapper.editor.as_ref().unwrap().size();
+        let (unscaled_width, unscaled_height) =
+            wrapper.editor.borrow().as_ref().unwrap().lock().size();
         let scaling_factor = wrapper.editor_scaling_factor.load(Ordering::Relaxed);
         (*width, *height) = (
             (unscaled_width as f32 * scaling_factor).round() as u32,
@@ -2734,7 +2802,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         check_null_ptr!(false, plugin);
         let wrapper = &*(plugin as *const Self);
 
-        let (unscaled_width, unscaled_height) = wrapper.editor.as_ref().unwrap().size();
+        let (unscaled_width, unscaled_height) =
+            wrapper.editor.borrow().as_ref().unwrap().lock().size();
         let scaling_factor = wrapper.editor_scaling_factor.load(Ordering::Relaxed);
         let (editor_width, editor_height) = (
             (unscaled_width as f32 * scaling_factor).round() as u32,
@@ -2755,7 +2824,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         let window = &*window;
 
         let result = {
-            let mut editor_handle = wrapper.editor_handle.write();
+            let mut editor_handle = wrapper.editor_handle.lock();
             if editor_handle.is_none() {
                 let api = CStr::from_ptr(window.api);
                 let handle = if api == CLAP_WINDOW_API_X11 {
@@ -2776,7 +2845,7 @@ impl<P: ClapPlugin> Wrapper<P> {
                 };
 
                 // This extension is only exposed when we have an editor
-                *editor_handle = Some(wrapper.editor.as_ref().unwrap().spawn(
+                *editor_handle = Some(wrapper.editor.borrow().as_ref().unwrap().lock().spawn(
                     ParentWindowHandle { handle },
                     wrapper.clone().make_gui_context(),
                     false
@@ -3131,7 +3200,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         }
         read_buffer.set_len(length as usize);
 
-        let success = state::deserialize_json(
+        let success = state::deserialize_json::<P>(
             &read_buffer,
             wrapper.params.clone(),
             state::make_params_getter(&wrapper.param_by_hash, &wrapper.param_id_to_hash),
@@ -3146,7 +3215,7 @@ impl<P: ClapPlugin> Wrapper<P> {
 
         let bus_config = wrapper.current_bus_config.load();
         if let Some(buffer_config) = wrapper.current_buffer_config.load() {
-            let mut plugin = wrapper.plugin.write();
+            let mut plugin = wrapper.plugin.lock();
             plugin.initialize(
                 &bus_config,
                 &buffer_config,

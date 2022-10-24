@@ -1,25 +1,25 @@
-//! Continuous (or discrete, with a step size) floating point parameters.
+//! Stepped integer parameters.
 
 use atomic_float::AtomicF32;
 use std::fmt::Display;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 use super::internals::ParamPtr;
-use super::range::FloatRange;
+use super::range::IntRange;
 use super::smoothing::{Smoother, SmoothingStyle};
 use super::{Param, ParamFlags, ParamMut};
 
-/// A floating point parameter that's stored unnormalized. The range is used for the normalization
+/// A discrete integer parameter that's stored unnormalized. The range is used for the normalization
 /// process.
-pub struct FloatParam {
+pub struct IntParam {
     /// The field's current plain value, after monophonic modulation has been applied.
-    value: AtomicF32,
+    value: AtomicI32,
     /// The field's current value normalized to the `[0, 1]` range.
     normalized_value: AtomicF32,
     /// The field's plain, unnormalized value before any monophonic automation coming from the host
     /// has been applied. This will always be the same as `value` for VST3 plugins.
-    unmodulated_value: AtomicF32,
+    unmodulated_value: AtomicI32,
     /// The field's value normalized to the `[0, 1]` range before any monophonic automation coming
     /// from the host has been applied. This will always be the same as `value` for VST3 plugins.
     unmodulated_normalized_value: AtomicF32,
@@ -28,10 +28,10 @@ pub struct FloatParam {
     /// clamped, and this value persists after new automation events.
     modulation_offset: AtomicF32,
     /// The field's default plain, unnormalized value.
-    default: f32,
+    default: i32,
     /// An optional smoother that will automatically interpolate between the new automation values
     /// set by the host.
-    pub smoothed: Smoother<f32>,
+    pub smoothed: Smoother<i32>,
 
     /// Flags to control the parameter's behavior. See [`ParamFlags`].
     flags: ParamFlags,
@@ -43,51 +43,43 @@ pub struct FloatParam {
     /// parameters struct, move a clone of that `Arc` into this closure, and then modify that.
     ///
     /// TODO: We probably also want to pass the old value to this function.
-    value_changed: Option<Arc<dyn Fn(f32) + Send + Sync>>,
+    value_changed: Option<Arc<dyn Fn(i32) + Send + Sync>>,
 
     /// The distribution of the parameter's values.
-    range: FloatRange,
-    /// The distance between discrete steps in this parameter. Mostly useful for quantizing GUI
-    /// input. If this is set and if [`value_to_string`][Self::value_to_string] is not set, then
-    /// this is also used when formatting the parameter. This must be a positive, nonzero number.
-    step_size: Option<f32>,
+    range: IntRange,
     /// The parameter's human readable display name.
     name: String,
-    /// The parameter value's unit, added after [`value_to_string`][Self::value_to_string] if that
-    /// is set. NIH-plug will not automatically add a space before the unit.
+    /// The parameter value's unit, added after `value_to_string` if that is set. NIH-plug will not
+    /// automatically add a space before the unit.
     unit: &'static str,
     /// If this parameter has been marked as polyphonically modulatable, then this will be a unique
     /// integer identifying the parameter. Because this value is determined by the plugin itself,
     /// the plugin can easily map
-    /// [`NoteEvent::PolyModulation][crate::prelude::NoteEvent::PolyModulation`] events to the
+    /// [`NoteEvent::PolyModulation`][crate::prelude::NoteEvent::PolyModulation] events to the
     /// correct parameter by pattern matching on a constant.
     poly_modulation_id: Option<u32>,
     /// Optional custom conversion function from a plain **unnormalized** value to a string.
-    value_to_string: Option<Arc<dyn Fn(f32) -> String + Send + Sync>>,
+    value_to_string: Option<Arc<dyn Fn(i32) -> String + Send + Sync>>,
     /// Optional custom conversion function from a string to a plain **unnormalized** value. If the
     /// string cannot be parsed, then this should return a `None`. If this happens while the
     /// parameter is being updated then the update will be canceled.
     ///
     /// The input string may or may not contain the unit, so you will need to be able to handle
     /// that.
-    string_to_value: Option<Arc<dyn Fn(&str) -> Option<f32> + Send + Sync>>,
+    string_to_value: Option<Arc<dyn Fn(&str) -> Option<i32> + Send + Sync>>,
 }
 
-impl Display for FloatParam {
+impl Display for IntParam {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match (&self.value_to_string, &self.step_size) {
-            (Some(func), _) => write!(f, "{}{}", func(self.value()), self.unit),
-            (None, Some(step_size)) => {
-                let num_digits = decimals_from_step_size(*step_size);
-                write!(f, "{:.num_digits$}{}", self.value(), self.unit)
-            }
+        match &self.value_to_string {
+            Some(func) => write!(f, "{}{}", func(self.value()), self.unit),
             _ => write!(f, "{}{}", self.value(), self.unit),
         }
     }
 }
 
-impl Param for FloatParam {
-    type Plain = f32;
+impl Param for IntParam {
+    type Plain = i32;
 
     fn name(&self) -> &str {
         &self.name
@@ -127,32 +119,24 @@ impl Param for FloatParam {
     }
 
     fn step_count(&self) -> Option<usize> {
-        None
+        Some(self.range.step_count())
     }
 
     fn previous_step(&self, from: Self::Plain) -> Self::Plain {
-        self.range.previous_step(from, self.step_size)
+        self.range.previous_step(from)
     }
 
     fn next_step(&self, from: Self::Plain) -> Self::Plain {
-        self.range.next_step(from, self.step_size)
+        self.range.next_step(from)
     }
 
     fn normalized_value_to_string(&self, normalized: f32, include_unit: bool) -> String {
         let value = self.preview_plain(normalized);
-        match (&self.value_to_string, &self.step_size, include_unit) {
-            (Some(f), _, true) => format!("{}{}", f(value), self.unit),
-            (Some(f), _, false) => f(value),
-            (None, Some(step_size), true) => {
-                let num_digits = decimals_from_step_size(*step_size);
-                format!("{:.num_digits$}{}", value, self.unit)
-            }
-            (None, Some(step_size), false) => {
-                let num_digits = decimals_from_step_size(*step_size);
-                format!("{:.num_digits$}", value)
-            }
-            (None, None, true) => format!("{}{}", value, self.unit),
-            (None, None, false) => format!("{}", value),
+        match (&self.value_to_string, include_unit) {
+            (Some(f), true) => format!("{}{}", f(value), self.unit),
+            (Some(f), false) => f(value),
+            (None, true) => format!("{}{}", value, self.unit),
+            (None, false) => format!("{}", value),
         }
     }
 
@@ -171,11 +155,7 @@ impl Param for FloatParam {
     }
 
     fn preview_plain(&self, normalized: f32) -> Self::Plain {
-        let value = self.range.unnormalize(normalized);
-        match &self.step_size {
-            Some(step_size) => self.range.snap_to_step(value, *step_size as Self::Plain),
-            None => value,
-        }
+        self.range.unnormalize(normalized)
     }
 
     fn flags(&self) -> ParamFlags {
@@ -183,11 +163,11 @@ impl Param for FloatParam {
     }
 
     fn as_ptr(&self) -> ParamPtr {
-        ParamPtr::FloatParam(self as *const _ as *mut _)
+        ParamPtr::IntParam(self as *const _ as *mut _)
     }
 }
 
-impl ParamMut for FloatParam {
+impl ParamMut for IntParam {
     fn set_plain_value(&self, plain: Self::Plain) {
         let unmodulated_value = plain;
         let unmodulated_normalized_value = self.preview_normalized(plain);
@@ -240,14 +220,14 @@ impl ParamMut for FloatParam {
     }
 }
 
-impl FloatParam {
-    /// Build a new [`FloatParam`]. Use the other associated functions to modify the behavior of the
+impl IntParam {
+    /// Build a new [`IntParam`]. Use the other associated functions to modify the behavior of the
     /// parameter.
-    pub fn new(name: impl Into<String>, default: f32, range: FloatRange) -> Self {
+    pub fn new(name: impl Into<String>, default: i32, range: IntRange) -> Self {
         Self {
-            value: AtomicF32::new(default),
+            value: AtomicI32::new(default),
             normalized_value: AtomicF32::new(range.normalize(default)),
-            unmodulated_value: AtomicF32::new(default),
+            unmodulated_value: AtomicI32::new(default),
             unmodulated_normalized_value: AtomicF32::new(range.normalize(default)),
             modulation_offset: AtomicF32::new(0.0),
             default,
@@ -257,7 +237,6 @@ impl FloatParam {
             value_changed: None,
 
             range,
-            step_size: None,
             name: name.into(),
             unit: "",
             poly_modulation_id: None,
@@ -269,12 +248,12 @@ impl FloatParam {
     /// The field's current plain value, after monophonic modulation has been applied. Equivalent to
     /// calling `param.plain_value()`.
     #[inline]
-    pub fn value(&self) -> f32 {
+    pub fn value(&self) -> i32 {
         self.plain_value()
     }
 
     /// Enable polyphonic modulation for this parameter. The ID is used to uniquely identify this
-    /// parameter in [`NoteEvent::PolyModulation][crate::prelude::NoteEvent::PolyModulation`]
+    /// parameter in [`NoteEvent::PolyModulation`][crate::prelude::NoteEvent::PolyModulation]
     /// events, and must thus be unique between _all_ polyphonically modulatable parameters. See the
     /// event's documentation on how to use polyphonic modulation. Also consider configuring the
     /// [`ClapPlugin::CLAP_POLY_MODULATION_CONFIG`][crate::prelude::ClapPlugin::CLAP_POLY_MODULATION_CONFIG]
@@ -283,8 +262,8 @@ impl FloatParam {
     /// # Important
     ///
     /// After enabling polyphonic modulation, the plugin **must** start sending
-    /// [`NoteEvent::VoiceTerminated`][crate::prelude::NoteEvent::VoiceEnd] events to the host when
-    /// a voice has fully ended. This allows the host to reuse its modulation resources.
+    /// [`NoteEvent::VoiceTerminated`][crate::prelude::NoteEvent::VoiceTerminated] events to the
+    /// host when a voice has fully ended. This allows the host to reuse its modulation resources.
     pub fn with_poly_modulation_id(mut self, id: u32) -> Self {
         self.poly_modulation_id = Some(id);
         self
@@ -296,12 +275,9 @@ impl FloatParam {
         // Logarithmic smoothing will cause problems if the range goes through zero since then you
         // end up multiplying by zero
         let goes_through_zero = match (&style, &self.range) {
-            (
-                SmoothingStyle::Logarithmic(_),
-                FloatRange::Linear { min, max }
-                | FloatRange::Skewed { min, max, .. }
-                | FloatRange::SymmetricalSkewed { min, max, .. },
-            ) => *min == 0.0 || *max == 0.0 || min.signum() != max.signum(),
+            (SmoothingStyle::Logarithmic(_), IntRange::Linear { min, max }) => {
+                *min == 0 || *max == 0 || min.signum() != max.signum()
+            }
             _ => false,
         };
         nih_debug_assert!(
@@ -317,7 +293,7 @@ impl FloatParam {
     /// is the parameter's new value. This should not do anything expensive as it may be called
     /// multiple times in rapid succession, and it can be run from both the GUI and the audio
     /// thread.
-    pub fn with_callback(mut self, callback: Arc<dyn Fn(f32) + Send + Sync>) -> Self {
+    pub fn with_callback(mut self, callback: Arc<dyn Fn(i32) + Send + Sync>) -> Self {
         self.value_changed = Some(callback);
         self
     }
@@ -330,24 +306,17 @@ impl FloatParam {
         self
     }
 
-    /// Set the distance between steps of a [FloatParam]. Mostly useful for quantizing GUI input. If
-    /// this is set and a [`value_to_string`][Self::with_value_to_string()] function is not set,
-    /// then this is also used when formatting the parameter. This must be a positive, nonzero
-    /// number.
-    pub fn with_step_size(mut self, step_size: f32) -> Self {
-        self.step_size = Some(step_size);
-        self
-    }
-
     /// Use a custom conversion function to convert the plain, unnormalized value to a
     /// string.
     pub fn with_value_to_string(
         mut self,
-        callback: Arc<dyn Fn(f32) -> String + Send + Sync>,
+        callback: Arc<dyn Fn(i32) -> String + Send + Sync>,
     ) -> Self {
         self.value_to_string = Some(callback);
         self
     }
+
+    // `with_step_size` is only implemented for the f32 version
 
     /// Use a custom conversion function to convert from a string to a plain, unnormalized
     /// value. If the string cannot be parsed, then this should return a `None`. If this
@@ -357,7 +326,7 @@ impl FloatParam {
     /// that.
     pub fn with_string_to_value(
         mut self,
-        callback: Arc<dyn Fn(&str) -> Option<f32> + Send + Sync>,
+        callback: Arc<dyn Fn(&str) -> Option<i32> + Send + Sync>,
     ) -> Self {
         self.string_to_value = Some(callback);
         self
@@ -385,22 +354,4 @@ impl FloatParam {
         self.flags.insert(ParamFlags::HIDE_IN_GENERIC_UI);
         self
     }
-}
-
-/// Calculate how many decimals to round to when displaying a floating point value with a specific
-/// step size. We'll perform some rounding to ignore spurious extra precision caused by the floating
-/// point quantization.
-fn decimals_from_step_size(step_size: f32) -> usize {
-    const SCALE: f32 = 1_000_000.0; // 10.0f32.powi(f32::DIGITS as i32)
-    let step_size = (step_size * SCALE).round() / SCALE;
-
-    let mut num_digits = 0;
-    for decimals in 0..f32::DIGITS as i32 {
-        if step_size * 10.0f32.powi(decimals) as f32 >= 1.0 {
-            num_digits = decimals;
-            break;
-        }
-    }
-
-    num_digits as usize
 }

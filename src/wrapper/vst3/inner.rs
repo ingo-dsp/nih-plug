@@ -1,7 +1,7 @@
 use atomic_refcell::AtomicRefCell;
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::{self, SendTimeoutError};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -15,12 +15,16 @@ use super::param_units::ParamUnits;
 use super::util::{ObjectPtr, VstPtr, VST3_MIDI_PARAMS_END, VST3_MIDI_PARAMS_START};
 use super::view::WrapperView;
 use crate::buffer::Buffer;
-use crate::context::Transport;
+use crate::context::gui::AsyncExecutor;
+use crate::context::process::Transport;
+use crate::editor::Editor;
 use crate::event_loop::{EventLoop, MainThreadExecutor, OsEventLoop};
 use crate::midi::{MidiConfig, NoteEvent};
-use crate::param::internals::{ParamPtr, Params};
-use crate::param::ParamFlags;
-use crate::plugin::{BufferConfig, BusConfig, Editor, ProcessMode, ProcessStatus, Vst3Plugin};
+use crate::params::internals::ParamPtr;
+use crate::params::{ParamFlags, Params};
+use crate::plugin::{
+    BufferConfig, BusConfig, Plugin, ProcessMode, ProcessStatus, TaskExecutor, Vst3Plugin,
+};
 use crate::wrapper::state::{self, PluginState};
 use crate::wrapper::util::{hash_param_id, process_wrapper};
 
@@ -29,15 +33,17 @@ use crate::wrapper::util::{hash_param_id, process_wrapper};
 /// its own struct.
 pub(crate) struct WrapperInner<P: Vst3Plugin> {
     /// The wrapped plugin instance.
-    pub plugin: RwLock<P>,
+    pub plugin: Mutex<P>,
+    /// The plugin's background task executor closure.
+    pub task_executor: Mutex<TaskExecutor<P>>,
     /// The plugin's parameters. These are fetched once during initialization. That way the
     /// `ParamPtr`s are guaranteed to live at least as long as this object and we can interact with
     /// the `Params` object without having to acquire a lock on `plugin`.
     pub params: Arc<dyn Params>,
     /// The plugin's editor, if it has one. This object does not do anything on its own, but we need
     /// to instantiate this in advance so we don't need to lock the entire [`Plugin`] object when
-    /// creating an editor.
-    pub editor: Option<Arc<dyn Editor>>,
+    /// creating an editor. Wrapped in an `AtomicRefCell` because it needs to be initialized late.
+    pub editor: AtomicRefCell<Option<Arc<Mutex<Box<dyn Editor>>>>>,
 
     /// The host's [`IComponentHandler`] instance, if passed through
     /// [`IEditController::set_component_handler`].
@@ -49,14 +55,14 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
 
     /// A realtime-safe task queue so the plugin can schedule tasks that need to be run later on the
     /// GUI thread. This field should not be used directly for posting tasks. This should be done
-    /// through [`Self::do_maybe_async()`] instead. That method posts the task to the host's
+    /// through [`Self::schedule_gui()`] instead. That method posts the task to the host's
     /// `IRunLoop` instead of it's available.
     ///
     /// This AtomicRefCell+Option is only needed because it has to be initialized late. There is no
     /// reason to mutably borrow the event loop, so reads will never be contested.
     ///
     /// TODO: Is there a better type for Send+Sync late initialization?
-    pub event_loop: AtomicRefCell<Option<OsEventLoop<Task, Self>>>,
+    pub event_loop: AtomicRefCell<Option<OsEventLoop<Task<P>, Self>>>,
 
     /// Whether the plugin is currently processing audio. In other words, the last state
     /// `IAudioProcessor::setActive()` has been called with.
@@ -147,8 +153,10 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
 /// Tasks that can be sent from the plugin to be executed on the main thread in a non-blocking
 /// realtime-safe way (either a random thread or `IRunLoop` on Linux, the OS' message loop on
 /// Windows and macOS).
-#[derive(Debug, Clone)]
-pub enum Task {
+#[allow(clippy::enum_variant_names)]
+pub enum Task<P: Plugin> {
+    /// Execute one of the plugin's background tasks.
+    PluginTask(P::BackgroundTask),
     /// Trigger a restart with the given restart flags. This is a bit set of the flags from
     /// [`vst3_sys::vst::RestartFlags`].
     TriggerRestart(i32),
@@ -190,7 +198,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
     #[allow(unused_unsafe)]
     pub fn new() -> Arc<Self> {
         let plugin = P::default();
-        let editor = plugin.editor().map(Arc::from);
+        let task_executor = Mutex::new(plugin.task_executor());
 
         // This is used to allow the plugin to restore preset data from its editor, see the comment
         // on `Self::updated_state_sender`
@@ -272,9 +280,11 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             .collect();
 
         let wrapper = Self {
-            plugin: RwLock::new(plugin),
+            plugin: Mutex::new(plugin),
+            task_executor,
             params,
-            editor,
+            // Initialized later as it needs a reference to the wrapper for the async executor
+            editor: AtomicRefCell::new(None),
 
             component_handler: AtomicRefCell::new(None),
 
@@ -319,8 +329,31 @@ impl<P: Vst3Plugin> WrapperInner<P> {
         //        serving multiple plugin instances, Arc can't be used because its reference count
         //        is separate from the internal COM-style reference count.
         let wrapper: Arc<WrapperInner<P>> = wrapper.into();
-        *wrapper.event_loop.borrow_mut() =
-            Some(OsEventLoop::new_and_spawn(Arc::downgrade(&wrapper)));
+        *wrapper.event_loop.borrow_mut() = Some(OsEventLoop::new_and_spawn(wrapper.clone()));
+
+        // The editor also needs to be initialized later so the Async executor can work.
+        *wrapper.editor.borrow_mut() = wrapper
+            .plugin
+            .lock()
+            .editor(AsyncExecutor {
+                execute_background: Arc::new({
+                    let wrapper = wrapper.clone();
+
+                    move |task| {
+                        let task_posted = wrapper.schedule_background(Task::PluginTask(task));
+                        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+                    }
+                }),
+                execute_gui: Arc::new({
+                    let wrapper = wrapper.clone();
+
+                    move |task| {
+                        let task_posted = wrapper.schedule_gui(Task::PluginTask(task));
+                        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+                    }
+                }),
+            })
+            .map(|editor| Arc::new(Mutex::new(editor)));
 
         wrapper
     }
@@ -342,17 +375,28 @@ impl<P: Vst3Plugin> WrapperInner<P> {
         }
     }
 
-    /// Either posts the function to the task queue using [`EventLoop::do_maybe_async()`] so it can
-    /// be delegated to the main thread, executes the task directly if this is the main thread, or
-    /// runs the task on the host's `IRunLoop` if the GUI is open and it exposes one. This function
+    /// Posts the task to the background task queue using [`EventLoop::schedule_background()`] so it
+    /// can be run in the background without blocking either the GUI or the audio thread.
     ///
     /// If the task queue is full, then this will return false.
     #[must_use]
-    pub fn do_maybe_async(&self, task: Task) -> bool {
+    pub fn schedule_background(&self, task: Task<P>) -> bool {
+        let event_loop = self.event_loop.borrow();
+        let event_loop = event_loop.as_ref().unwrap();
+        event_loop.schedule_background(task)
+    }
+
+    /// Either posts the task to the task queue using [`EventLoop::schedule_gui()`] so it can be
+    /// delegated to the main thread, executes the task directly if this is the main thread, or runs
+    /// the task on the host's `IRunLoop` if the GUI is open and it exposes one.
+    ///
+    /// If the task queue is full, then this will return false.
+    #[must_use]
+    pub fn schedule_gui(&self, task: Task<P>) -> bool {
         let event_loop = self.event_loop.borrow();
         let event_loop = event_loop.as_ref().unwrap();
         if event_loop.is_main_thread() {
-            unsafe { self.execute(task) };
+            self.execute(task, true);
             true
         } else {
             // If the editor is open, and the host exposes the `IRunLoop` interface, then we'll run
@@ -363,19 +407,27 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             match &*self.plug_view.read() {
                 Some(plug_view) => match plug_view.do_maybe_in_run_loop(task) {
                     Ok(()) => true,
-                    Err(task) => event_loop.do_maybe_async(task),
+                    Err(task) => event_loop.schedule_gui(task),
                 },
-                None => event_loop.do_maybe_async(task),
+                None => event_loop.schedule_gui(task),
             }
         }
     }
 
     /// If there's an editor open, let it know that parameter values have changed. This should be
     /// called whenever there's been a call or multiple calls to
-    /// [`set_normalized_value_by_hash()[Self::set_normalized_value_by_hash()`].
+    /// [`set_normalized_value_by_hash()[Self::set_normalized_value_by_hash()`]. In the off-chance
+    /// that the editor instance is currently locked then nothing will happen, and the request can
+    /// safely be ignored.
     pub fn notify_param_values_changed(&self) {
-        if let Some(editor) = &self.editor {
-            editor.param_values_changed();
+        if let Some(editor) = self.editor.borrow().as_ref() {
+            match editor.try_lock() {
+                Some(editor) => editor.param_values_changed(),
+                None => nih_debug_assert_failure!(
+                    "The editor was locked when sending a parameter value change notification, \
+                     ignoring"
+                ),
+            }
         }
     }
 
@@ -458,8 +510,8 @@ impl<P: Vst3Plugin> WrapperInner<P> {
                 // Otherwise we'll set the state right here and now, since this function should be
                 // called from a GUI thread
                 unsafe {
-                    state::deserialize_object(
-                        &state,
+                    state::deserialize_object::<P>(
+                        &mut state,
                         self.params.clone(),
                         state::make_params_getter(&self.param_by_hash, &self.param_id_to_hash),
                         self.current_buffer_config.load().as_ref(),
@@ -469,7 +521,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
                 self.notify_param_values_changed();
                 let bus_config = self.current_bus_config.load();
                 if let Some(buffer_config) = self.current_buffer_config.load() {
-                    let mut plugin = self.plugin.write();
+                    let mut plugin = self.plugin.lock();
                     plugin.initialize(&bus_config, &buffer_config, &mut self.make_init_context());
                     process_wrapper(|| plugin.reset());
                 }
@@ -484,7 +536,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
                 .borrow()
                 .as_ref()
                 .unwrap()
-                .do_maybe_async(Task::TriggerRestart(
+                .schedule_gui(Task::TriggerRestart(
                     RestartFlags::kParamValuesChanged as i32,
                 ));
         nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
@@ -495,31 +547,29 @@ impl<P: Vst3Plugin> WrapperInner<P> {
         let old_latency = self.current_latency.swap(samples, Ordering::SeqCst);
         if old_latency != samples {
             let task_posted =
-                self.do_maybe_async(Task::TriggerRestart(RestartFlags::kLatencyChanged as i32));
+                self.schedule_gui(Task::TriggerRestart(RestartFlags::kLatencyChanged as i32));
             nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
         }
     }
 }
 
-impl<P: Vst3Plugin> MainThreadExecutor<Task> for WrapperInner<P> {
-    unsafe fn execute(&self, task: Task) {
+impl<P: Vst3Plugin> MainThreadExecutor<Task<P>> for WrapperInner<P> {
+    fn execute(&self, task: Task<P>, is_gui_thread: bool) {
         // This function is always called from the main thread
-        // TODO: When we add GUI resizing and context menus, this should propagate those events to
-        //       `IRunLoop` on Linux to keep REAPER happy. That does mean a double spool, but we can
-        //       come up with a nicer solution to handle that later (can always add a separate
-        //       function for checking if a to be scheduled task can be handled right there and
-        //       then).
         match task {
+            Task::PluginTask(task) => (self.task_executor.lock())(task),
             Task::TriggerRestart(flags) => match &*self.component_handler.borrow() {
-                Some(handler) => {
+                Some(handler) => unsafe {
+                    nih_debug_assert!(is_gui_thread);
                     handler.restart_component(flags);
-                }
+                },
                 None => nih_debug_assert_failure!("Component handler not yet set"),
             },
             Task::RequestResize => match &*self.plug_view.read() {
-                Some(plug_view) => {
+                Some(plug_view) => unsafe {
+                    nih_debug_assert!(is_gui_thread);
                     plug_view.request_resize();
-                }
+                },
                 None => nih_debug_assert_failure!("Can't resize a closed editor"),
             },
         }

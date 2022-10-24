@@ -307,11 +307,13 @@ impl Plugin for Crisp {
 
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
+    type BackgroundTask = ();
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
 
-    fn editor(&self) -> Option<Box<dyn Editor>> {
+    fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         editor::create(self.params.clone(), self.params.editor_state.clone())
     }
 
@@ -325,7 +327,7 @@ impl Plugin for Crisp {
         &mut self,
         bus_config: &BusConfig,
         buffer_config: &BufferConfig,
-        _context: &mut impl InitContext,
+        _context: &mut impl InitContext<Self>,
     ) -> bool {
         nih_debug_assert_eq!(bus_config.num_input_channels, NUM_CHANNELS);
         nih_debug_assert_eq!(bus_config.num_output_channels, NUM_CHANNELS);
@@ -353,7 +355,7 @@ impl Plugin for Crisp {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext,
+        _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         for (_, mut block) in buffer.iter_blocks(BLOCK_SIZE) {
             let mut rm_outputs = [[0.0; NUM_CHANNELS as usize]; BLOCK_SIZE];

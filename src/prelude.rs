@@ -11,18 +11,21 @@ pub use crate::formatters;
 pub use crate::util;
 
 pub use crate::buffer::Buffer;
-pub use crate::context::{GuiContext, InitContext, ParamSetter, PluginApi, ProcessContext};
+pub use crate::context::gui::{AsyncExecutor, GuiContext, ParamSetter};
+pub use crate::context::init::InitContext;
+pub use crate::context::process::ProcessContext;
 // This also includes the derive macro
+pub use crate::editor::{Editor, ParentWindowHandle};
 pub use crate::midi::{control_change, MidiConfig, NoteEvent};
-pub use crate::param::enums::{Enum, EnumParam};
-pub use crate::param::internals::{ParamPtr, Params};
-pub use crate::param::range::{FloatRange, IntRange};
-pub use crate::param::smoothing::{Smoothable, Smoother, SmoothingStyle};
-pub use crate::param::{BoolParam, FloatParam, IntParam, Param, ParamFlags};
+pub use crate::params::enums::{Enum, EnumParam};
+pub use crate::params::internals::ParamPtr;
+pub use crate::params::range::{FloatRange, IntRange};
+pub use crate::params::smoothing::{Smoothable, Smoother, SmoothingStyle};
+pub use crate::params::Params;
+pub use crate::params::{BoolParam, FloatParam, IntParam, Param, ParamFlags};
 pub use crate::plugin::{
-    AuxiliaryBuffers, AuxiliaryIOConfig, BufferConfig, BusConfig, ClapPlugin, Editor,
-    ParentWindowHandle, Plugin, PolyModulationConfig, PortNames, ProcessMode, ProcessStatus,
-    Vst3Plugin,
+    AuxiliaryBuffers, AuxiliaryIOConfig, BufferConfig, BusConfig, ClapPlugin, Plugin,
+    PolyModulationConfig, PortNames, ProcessMode, ProcessStatus, TaskExecutor, Vst3Plugin,
 };
 pub use crate::wrapper::clap::features::ClapFeature;
 pub use crate::wrapper::state::PluginState;

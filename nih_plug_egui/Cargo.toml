@@ -8,7 +8,12 @@ license = "ISC"
 description = "An adapter to use egui GUIs with NIH-plug"
 
 [features]
-default = ["opengl"]
+default = ["egui-default-features", "opengl"]
+
+# Use egui's default features
+egui-default-features = ["egui/default"]
+# `nih_plug_egui` always uses OpenGL since egui's wgpu backend is still unstable
+# depending on the platform
 opengl = []
 
 [dependencies]
@@ -18,7 +23,9 @@ baseview = { git = "https://github.com/ingo-dsp/baseview.git", branch = "develop
 keyboard-types = "0.6"
 copypasta = "0.8"
 crossbeam = "0.8"
-egui = { git = "https://github.com/ingo-dsp/egui.git", branch="develop-ingo" }
+# The `egui-default-features` feature enables the default features. This makes
+# it possible to opt out of this if needed.
+egui = { git = "https://github.com/ingo-dsp/egui.git", branch="develop-ingo", default-features = false }
 egui-baseview = { git = "https://github.com/ingo-dsp/egui-baseview.git", branch="develop-ingo" }
 lazy_static = "1.4"
 parking_lot = "0.12"

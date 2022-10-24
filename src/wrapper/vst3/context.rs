@@ -5,18 +5,14 @@ use std::sync::Arc;
 use vst3_sys::vst::IComponentHandler;
 
 use super::inner::{Task, WrapperInner};
-use crate::context::{GuiContext, InitContext, PluginApi, ProcessContext, Transport};
+use crate::context::gui::GuiContext;
+use crate::context::init::InitContext;
+use crate::context::process::{ProcessContext, Transport};
+use crate::context::PluginApi;
 use crate::midi::NoteEvent;
-use crate::param::internals::ParamPtr;
+use crate::params::internals::ParamPtr;
 use crate::plugin::Vst3Plugin;
 use crate::wrapper::state::PluginState;
-
-/// A [`GuiContext`] implementation for the wrapper. This is passed to the plugin in
-/// [`Editor::spawn()`][crate::prelude::Editor::spawn()] so it can interact with the rest of the plugin and
-/// with the host for things like setting parameters.
-pub(crate) struct WrapperGuiContext<P: Vst3Plugin> {
-    pub(super) inner: Arc<WrapperInner<P>>,
-}
 
 /// A [`InitContext`] implementation for the wrapper. This is a separate object so it can hold on to
 /// lock guards for event queues. Otherwise reading these events would require constant unnecessary
@@ -35,13 +31,75 @@ pub(crate) struct WrapperProcessContext<'a, P: Vst3Plugin> {
     pub(super) transport: Transport,
 }
 
+/// A [`GuiContext`] implementation for the wrapper. This is passed to the plugin in
+/// [`Editor::spawn()`][crate::prelude::Editor::spawn()] so it can interact with the rest of the plugin and
+/// with the host for things like setting parameters.
+pub(crate) struct WrapperGuiContext<P: Vst3Plugin> {
+    pub(super) inner: Arc<WrapperInner<P>>,
+}
+
+impl<P: Vst3Plugin> InitContext<P> for WrapperInitContext<'_, P> {
+    fn plugin_api(&self) -> PluginApi {
+        PluginApi::Vst3
+    }
+
+    fn execute(&self, task: P::BackgroundTask) {
+        (self.inner.task_executor.lock())(task);
+    }
+
+    fn set_latency_samples(&self, samples: u32) {
+        self.inner.set_latency_samples(samples)
+    }
+
+    fn set_current_voice_capacity(&self, _capacity: u32) {
+        // This is only supported by CLAP
+    }
+}
+
+impl<P: Vst3Plugin> ProcessContext<P> for WrapperProcessContext<'_, P> {
+    fn plugin_api(&self) -> PluginApi {
+        PluginApi::Vst3
+    }
+
+    fn execute_background(&self, task: P::BackgroundTask) {
+        let task_posted = self.inner.schedule_background(Task::PluginTask(task));
+        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+    }
+
+    fn execute_gui(&self, task: P::BackgroundTask) {
+        let task_posted = self.inner.schedule_gui(Task::PluginTask(task));
+        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+    }
+
+    #[inline]
+    fn transport(&self) -> &Transport {
+        &self.transport
+    }
+
+    fn next_event(&mut self) -> Option<NoteEvent> {
+        self.input_events_guard.pop_front()
+    }
+
+    fn send_event(&mut self, event: NoteEvent) {
+        self.output_events_guard.push_back(event);
+    }
+
+    fn set_latency_samples(&self, samples: u32) {
+        self.inner.set_latency_samples(samples)
+    }
+
+    fn set_current_voice_capacity(&self, _capacity: u32) {
+        // This is only supported by CLAP
+    }
+}
+
 impl<P: Vst3Plugin> GuiContext for WrapperGuiContext<P> {
     fn plugin_api(&self) -> PluginApi {
         PluginApi::Vst3
     }
 
     fn request_resize(&self) -> bool {
-        let task_posted = self.inner.do_maybe_async(Task::RequestResize);
+        let task_posted = self.inner.schedule_gui(Task::RequestResize);
         nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
 
         // TODO: We don't handle resize request failures right now. In practice this should however
@@ -112,46 +170,5 @@ impl<P: Vst3Plugin> GuiContext for WrapperGuiContext<P> {
 
     fn set_state(&self, state: PluginState) {
         self.inner.set_state_object(state)
-    }
-}
-
-impl<P: Vst3Plugin> InitContext for WrapperInitContext<'_, P> {
-    fn plugin_api(&self) -> PluginApi {
-        PluginApi::Vst3
-    }
-
-    fn set_latency_samples(&self, samples: u32) {
-        self.inner.set_latency_samples(samples)
-    }
-
-    fn set_current_voice_capacity(&self, _capacity: u32) {
-        // This is only supported by CLAP
-    }
-}
-
-impl<P: Vst3Plugin> ProcessContext for WrapperProcessContext<'_, P> {
-    fn plugin_api(&self) -> PluginApi {
-        PluginApi::Vst3
-    }
-
-    #[inline]
-    fn transport(&self) -> &Transport {
-        &self.transport
-    }
-
-    fn next_event(&mut self) -> Option<NoteEvent> {
-        self.input_events_guard.pop_front()
-    }
-
-    fn send_event(&mut self, event: NoteEvent) {
-        self.output_events_guard.push_back(event);
-    }
-
-    fn set_latency_samples(&self, samples: u32) {
-        self.inner.set_latency_samples(samples)
-    }
-
-    fn set_current_voice_capacity(&self, _capacity: u32) {
-        // This is only supported by CLAP
     }
 }
