@@ -4,7 +4,6 @@ use crossbeam::channel;
 use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
 use raw_window_handle::HasRawWindowHandle;
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -135,7 +134,11 @@ impl WindowHandler for WrapperWindowHandler {
         }
     }
 
-    fn on_event(&mut self, _window: &mut Window, _event: baseview::Event) -> EventStatus {
+    fn on_event(&mut self, window: &mut Window, event: baseview::Event) -> EventStatus {
+        if let baseview::Event::Window(baseview::WindowEvent::Resized(window_info)) = event {
+            self.editor_handle.resize(window_info.logical_size(), window_info.scale() as f32);
+            return EventStatus::Captured
+        }
         EventStatus::Ignored
     }
 }

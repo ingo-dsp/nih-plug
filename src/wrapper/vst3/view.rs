@@ -401,15 +401,15 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
 
         let scaling_factor = self.scaling_factor.load(Ordering::Relaxed);
 
-        let (editor_width, editor_height) = (
-            (width as f32 / scaling_factor) as f64,
-            (height as f32 / scaling_factor) as f64,
-        );
+        let logical_size = baseview::Size {
+            width: (width as f32 / scaling_factor) as f64,
+            height: (height as f32 / scaling_factor) as f64,
+        };
 
         // Host->Plugin resizing
         if let Some(x) = self.editor_handle.try_write() {
             if let Some(x) = &*x {
-                x.resize(Size { width: editor_width, height: editor_height });
+                x.resize(logical_size, scaling_factor);
             }
         }
 

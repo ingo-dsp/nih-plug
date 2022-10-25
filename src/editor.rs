@@ -79,7 +79,7 @@ pub trait Editor: Send {
 }
 
 pub trait SpawnedWindow {
-    fn resize(&self, size: Size);
+    fn resize(&self, size: Size, scale_factor: f32);
 }
 
 /// A raw window handle for platform and GUI framework agnostic editors.

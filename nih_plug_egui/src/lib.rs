@@ -374,8 +374,8 @@ struct EguiEditorHandle {
     window: WindowHandle,
 }
 impl SpawnedWindow for EguiEditorHandle {
-    fn resize(&self, size: Size) {
-        self.window.resize(size);
+    fn resize(&self, size: Size, scale_factor: f32) {
+        self.window.resize(size, scale_factor);
     }
 }
 
