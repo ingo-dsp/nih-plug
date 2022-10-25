@@ -11,7 +11,7 @@ pub fn create_vst_keyboard_event(vst_character: vst3_sys::base::char16, vst_key_
     }
 
     if key.is_none() {
-        if vst_key_code > 128 {
+        if vst_key_code >= VKEY_FIRST_ASCII {
             key = char::from_u32(vst_key_code as u32 - 48).map(|x| Key::Character(x.to_string()));
         }
     }
@@ -229,7 +229,7 @@ fn vst_code_to_code(key_code: VstKeyCode) -> Option<Code> {
     })
 }
 
-// translated from "VirtualKeyCodes" data structure in vst3 api
+// translated from "VirtualKeyCodes" data structure in vst3 api - see https://steinbergmedia.github.io/vst3_doc/base/namespaceSteinberg.html
 #[allow(non_camel_case_types)]
 #[allow(dead_code)]
 #[derive(Copy, Clone)]
@@ -255,8 +255,9 @@ enum VstKeyCode {
     KEY_F17, KEY_F18, KEY_F19,
     //VKEY_FIRST_CODE = VirtualKeyCodes::KEY_BACK as i32,
     //VKEY_LAST_CODE = VirtualKeyCodes::KEY_F19 as i32,
-    //VKEY_ANY_ASCII = 128
+    //VKEY_FIRST_ASCII = 128
 }
+const VKEY_FIRST_ASCII: i16 = 128;
 
 // TODO: Use external crate to make this code safer?
 impl TryFrom<i16> for VstKeyCode {
@@ -269,7 +270,7 @@ impl TryFrom<i16> for VstKeyCode {
     }
 }
 
-// translated from "KeyModifier" data structure in vst3 api
+// translated from "KeyModifier" data structure in vst3 api - see https://steinbergmedia.github.io/vst3_doc/base/namespaceSteinberg.html
 bitflags::bitflags! {
     struct VstKeyModifier: usize {    
         const SHIFT_KEY = 1 << 0;
