@@ -2,38 +2,82 @@ use keyboard_types::*;
 
 pub fn create_vst_keyboard_event(vst_character: vst3_sys::base::char16, vst_key_code: i16, vst_modifiers: i16, state: KeyState) -> Result<KeyboardEvent, ()> {
     let modifiers: Modifiers = VstKeyModifier::from_bits(vst_modifiers as usize).ok_or(())?.into();
-    let vst_key_code= VstKeyCode::try_from(vst_key_code).ok();
-    let (code, key) = translate_vst_key_code_and_character(vst_character, vst_key_code).ok_or(())?;
+    let key_code = VstKeyCode::try_from(vst_key_code).ok();
+    let mut key = vst_character_to_char(vst_character).map(|x| Key::Character(x.to_string()));
+    let mut code = key_code.and_then(|x| vst_code_to_code(x));
+
+    if key.is_none() {
+        key = key_code.and_then(|x| vst_code_to_key(x));
+    }
+
+    if key.is_none() {
+        if vst_key_code > 128 {
+            key = char::from_u32(vst_key_code as u32 - 48).map(|x| Key::Character(x.to_string()));
+        }
+    }
+
+    let key = key.ok_or(())?;
+    if code.is_none() {
+        if let Key::Character(x) = &key {
+            code = char_to_code(x.chars().next().unwrap());
+        }
+    }
+    let code = code.unwrap_or(Code::Unidentified);
     let location = code_to_location(code);
     Ok(KeyboardEvent { code, key, location, modifiers, state, is_composing: false, repeat: false })
 }
 
-fn vst_character_to_char(vst_character: vst3_sys::base::char16) -> Option<char> {
-    if vst_character != 0 {
-        if let Some(Ok(ch)) = char::decode_utf16([vst_character as u16]).next() {
-            if ch != '\0' { // NB: should already be covered by the first check, but we want to be sure
-                return Some(ch)
-            }
+fn char_to_code(ch: char) -> Option<Code> {
+    Some(match ch {
+        'a' | 'A' => Code::KeyA,
+        'b' | 'B' => Code::KeyB,
+        'c' | 'C' => Code::KeyC,
+        'd' | 'D' => Code::KeyD,
+        'e' | 'E' => Code::KeyE,
+        'f' | 'F' => Code::KeyF,
+        'g' | 'G' => Code::KeyG,
+        'h' | 'H' => Code::KeyH,
+        'i' | 'I' => Code::KeyI,
+        'j' | 'J' => Code::KeyJ,
+        'k' | 'K' => Code::KeyK,
+        'l' | 'L' => Code::KeyL,
+        'm' | 'M' => Code::KeyM,
+        'n' | 'N' => Code::KeyN,
+        'o' | 'O' => Code::KeyO,
+        'p' | 'P' => Code::KeyP,
+        'q' | 'Q' => Code::KeyQ,
+        'r' | 'R' => Code::KeyR,
+        's' | 'S' => Code::KeyS,
+        't' | 'T' => Code::KeyT,
+        'u' | 'U' => Code::KeyU,
+        'v' | 'V' => Code::KeyV,
+        'w' | 'W' => Code::KeyW,
+        'x' | 'X' => Code::KeyX,
+        'y' | 'Y' => Code::KeyY,
+        'z' | 'Z' => Code::KeyZ,
+        '0' => Code::Digit0,
+        '1' => Code::Digit1,
+        '2' => Code::Digit2,
+        '3' => Code::Digit3,
+        '4' => Code::Digit4,
+        '5' => Code::Digit5,
+        '6' => Code::Digit6,
+        '7' => Code::Digit7,
+        '8' => Code::Digit8,
+        '9' => Code::Digit9,
+        
+        _ => {
+            // TODO: can we do more here?
+            return None;
         }
+    })
+}
+
+fn vst_character_to_char(vst_character: vst3_sys::base::char16) -> Option<char> {
+    if vst_character >= 20 { // starting with printable ascii range
+        return char::decode_utf16([vst_character as u16]).next().and_then(|x| x.ok());
     }
     None
-}
-
-fn translate_vst_key_code_and_character(vst_character: vst3_sys::base::char16, vst_key_code: Option<VstKeyCode>) -> Option<(Code, Key)> {
-    let result = if let Some((code, mut key)) = translate_vst_key_code(vst_key_code) {
-        let key = key.or_else(|| vst_character_to_char(vst_character).map(|x| Key::Character(x.to_string())))?;
-        (code, key)
-    } else {
-        (Code::Unidentified, vst_character_to_char(vst_character).map(|x| Key::Character(x.to_string()))?)
-    };
-    Some(result)
-}
-
-fn translate_vst_key_code(vst_key_code: Option<VstKeyCode>) -> Option<(Code, Option<Key>)> {
-    let key_code = vst_key_code?;
-    let code = vst_code_to_code(key_code)?;
-    let key = vst_code_to_key(key_code);
-    Some((code, key))
 }
 
 fn vst_code_to_key(key_code: VstKeyCode) -> Option<Key> {

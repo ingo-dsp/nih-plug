@@ -290,7 +290,13 @@ struct EguiKeyboardInput {
 impl EguiKeyboardInput {
     fn from_keyboard_event(event: &keyboard_types::KeyboardEvent, clipboard_ctx: Option<&mut copypasta::ClipboardContext>) -> EguiKeyboardInput {
         let mut events = vec![];
-        let mut modifiers = Modifiers::default();
+        let mut modifiers = Modifiers {
+            alt: event.modifiers.contains(keyboard_types::Modifiers::ALT),
+            command: event.modifiers.contains(keyboard_types::Modifiers::META) || (!cfg!(target_os = "macos") && event.modifiers.contains(keyboard_types::Modifiers::CONTROL)),
+            ctrl: event.modifiers.contains(keyboard_types::Modifiers::CONTROL) || (!cfg!(target_os = "macos") && event.modifiers.contains(keyboard_types::Modifiers::META)),
+            mac_cmd: cfg!(target_os = "macos") && event.modifiers.contains(keyboard_types::Modifiers::META),
+            shift: event.modifiers.contains(keyboard_types::Modifiers::SHIFT),
+        };
 
         use keyboard_types::Code;
 
