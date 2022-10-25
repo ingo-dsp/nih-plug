@@ -136,7 +136,11 @@ impl WindowHandler for WrapperWindowHandler {
 
     fn on_event(&mut self, window: &mut Window, event: baseview::Event) -> EventStatus {
         if let baseview::Event::Window(baseview::WindowEvent::Resized(window_info)) = event {
-            self.editor_handle.resize(window_info.logical_size(), window_info.scale() as f32);
+            self.editor_handle.resize(
+                window_info.logical_size().width as f32,
+                window_info.logical_size().height as f32,
+                window_info.scale() as f32
+            );
             return EventStatus::Captured
         }
         EventStatus::Ignored

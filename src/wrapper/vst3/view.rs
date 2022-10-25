@@ -12,7 +12,6 @@ use vst3_sys::gui::{IPlugFrame, IPlugView, IPlugViewContentScaleSupport, ViewRec
 use vst3_sys::utils::SharedVstPtr;
 use vst3_sys::VST3;
 use keyboard_types::KeyState;
-use baseview::Size;
 
 use super::inner::{Task, WrapperInner};
 use super::util::{ObjectPtr, VstPtr};
@@ -401,15 +400,13 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
 
         let scaling_factor = self.scaling_factor.load(Ordering::Relaxed);
 
-        let logical_size = baseview::Size {
-            width: (width as f32 / scaling_factor) as f64,
-            height: (height as f32 / scaling_factor) as f64,
-        };
+        let logical_width = width as f32 / scaling_factor;
+        let logical_height = height as f32 / scaling_factor;
 
         // Host->Plugin resizing
         if let Some(x) = self.editor_handle.try_write() {
             if let Some(x) = &*x {
-                x.resize(logical_size, scaling_factor);
+                x.resize(logical_width, logical_height, scaling_factor);
             }
         }
 

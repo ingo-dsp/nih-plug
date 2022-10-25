@@ -252,18 +252,17 @@ enum VstKeyCode {
     KEY_EQUALS, KEY_CONTEXTMENU, KEY_MEDIA_PLAY, KEY_MEDIA_STOP,
     KEY_MEDIA_PREV, KEY_MEDIA_NEXT, KEY_VOLUME_UP, KEY_VOLUME_DOWN,
     KEY_F13, KEY_F14, KEY_F15, KEY_F16,
-    KEY_F17, KEY_F18, KEY_F19,
-    //VKEY_FIRST_CODE = VirtualKeyCodes::KEY_BACK as i32,
-    //VKEY_LAST_CODE = VirtualKeyCodes::KEY_F19 as i32,
-    //VKEY_FIRST_ASCII = 128
+    KEY_F17, KEY_F18, KEY_F19
 }
+const VKEY_FIRST_CODE: i16 = VstKeyCode::KEY_BACK as i16;
+const VKEY_LAST_CODE: i16 = VstKeyCode::KEY_F19 as i16;
 const VKEY_FIRST_ASCII: i16 = 128;
 
-// TODO: Use external crate to make this code safer?
+// TODO: Use macros on the enum to make this code safer? Are there crates that help with this?
 impl TryFrom<i16> for VstKeyCode {
     type Error = ();
     fn try_from(key_code: i16) -> Result<Self, ()> {
-        if key_code >= VstKeyCode::KEY_BACK as i16 && key_code <= VstKeyCode::KEY_F19 as i16 {
+        if key_code >= VKEY_FIRST_CODE && key_code <= VKEY_LAST_CODE {
             return Ok(unsafe { std::mem::transmute(key_code) })
         }
         Err(())

@@ -1,9 +1,7 @@
 //! Traits for working with plugin editors.
 
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
-use std::any::Any;
 use std::sync::Arc;
-use baseview::Size;
 
 use crate::context::gui::GuiContext;
 
@@ -79,7 +77,7 @@ pub trait Editor: Send {
 }
 
 pub trait SpawnedWindow {
-    fn resize(&self, size: Size, scale_factor: f32);
+    fn resize(&self, logical_width: f32, logical_width: f32, scale_factor: f32);
 }
 
 /// A raw window handle for platform and GUI framework agnostic editors.

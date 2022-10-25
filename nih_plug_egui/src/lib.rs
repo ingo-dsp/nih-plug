@@ -380,8 +380,12 @@ struct EguiEditorHandle {
     window: WindowHandle,
 }
 impl SpawnedWindow for EguiEditorHandle {
-    fn resize(&self, size: Size, scale_factor: f32) {
-        self.window.resize(size, scale_factor);
+    fn resize(&self, logical_width: f32, logical_height: f32, scale_factor: f32) {
+        let logical_size = baseview::Size {
+            width: logical_width as f64,
+            height: logical_height as f64,
+        };
+        self.window.resize(logical_size, scale_factor);
     }
 }
 
