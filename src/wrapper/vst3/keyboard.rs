@@ -3,8 +3,13 @@ use keyboard_types::*;
 pub fn create_vst_keyboard_event(vst_character: vst3_sys::base::char16, vst_key_code: i16, vst_modifiers: i16, state: KeyState) -> Result<KeyboardEvent, ()> {
     let modifiers: Modifiers = VstKeyModifier::from_bits(vst_modifiers as usize).ok_or(())?.into();
     let key_code = VstKeyCode::try_from(vst_key_code).ok();
-    let mut key = vst_character_to_char(vst_character).map(|x| Key::Character(x.to_string()));
+
     let mut code = key_code.and_then(|x| vst_code_to_code(x));
+    let mut key = if vst_key_code >= VKEY_FIRST_ASCII || vst_key_code == 0 {
+        vst_character_to_char(vst_character).map(|x| Key::Character(x.to_string()))
+    } else {
+        None
+    };
 
     if key.is_none() {
         key = key_code.and_then(|x| vst_code_to_key(x));
@@ -88,7 +93,7 @@ fn vst_code_to_key(key_code: VstKeyCode) -> Option<Key> {
         VstKeyCode::KEY_RETURN => Key::Enter,
         VstKeyCode::KEY_PAUSE => Key::Pause,
         VstKeyCode::KEY_ESCAPE => Key::Escape,
-        VstKeyCode::KEY_SPACE => return None,
+        VstKeyCode::KEY_SPACE => Key::Character(' '.to_string()),
         VstKeyCode::KEY_NEXT => Key::NavigateNext,
         VstKeyCode::KEY_END => Key::End,
         VstKeyCode::KEY_HOME => Key::Home,
@@ -106,17 +111,22 @@ fn vst_code_to_key(key_code: VstKeyCode) -> Option<Key> {
         VstKeyCode::KEY_DELETE => Key::Delete,
         VstKeyCode::KEY_HELP => Key::Help,
 
-        VstKeyCode::KEY_NUMPAD0 | VstKeyCode::KEY_NUMPAD1 | VstKeyCode::KEY_NUMPAD2 |
-        VstKeyCode::KEY_NUMPAD3 | VstKeyCode::KEY_NUMPAD4 | VstKeyCode::KEY_NUMPAD5 |
-        VstKeyCode::KEY_NUMPAD6 | VstKeyCode::KEY_NUMPAD7 | VstKeyCode::KEY_NUMPAD8 |
-        VstKeyCode::KEY_NUMPAD9 |
-        VstKeyCode::KEY_MULTIPLY |
-        VstKeyCode::KEY_ADD |
-
-        VstKeyCode::KEY_SEPARATOR |
-        VstKeyCode::KEY_SUBTRACT |
-        VstKeyCode::KEY_DECIMAL |
-        VstKeyCode::KEY_DIVIDE => return None,
+        VstKeyCode::KEY_NUMPAD0 => Key::Character('0'.to_string()),
+        VstKeyCode::KEY_NUMPAD1 => Key::Character('1'.to_string()),
+        VstKeyCode::KEY_NUMPAD2 => Key::Character('2'.to_string()),
+        VstKeyCode::KEY_NUMPAD3 => Key::Character('0'.to_string()),
+        VstKeyCode::KEY_NUMPAD4 => Key::Character('0'.to_string()),
+        VstKeyCode::KEY_NUMPAD5 => Key::Character('0'.to_string()),
+        VstKeyCode::KEY_NUMPAD6 => Key::Character('0'.to_string()),
+        VstKeyCode::KEY_NUMPAD7 => Key::Character('0'.to_string()),
+        VstKeyCode::KEY_NUMPAD8 => Key::Character('0'.to_string()),
+        VstKeyCode::KEY_NUMPAD9 => Key::Character('0'.to_string()),
+        VstKeyCode::KEY_MULTIPLY => Key::Character('*'.to_string()),
+        VstKeyCode::KEY_ADD => Key::Character('+'.to_string()),
+        VstKeyCode::KEY_SEPARATOR => return None, // Not sure which one this is...
+        VstKeyCode::KEY_SUBTRACT => Key::Character('-'.to_string()),
+        VstKeyCode::KEY_DECIMAL => Key::Character('.'.to_string()),
+        VstKeyCode::KEY_DIVIDE => Key::Character('/'.to_string()),
 
         VstKeyCode::KEY_F1 => Key::F1,
         VstKeyCode::KEY_F2 => Key::F2,
@@ -142,7 +152,7 @@ fn vst_code_to_key(key_code: VstKeyCode) -> Option<Key> {
         VstKeyCode::KEY_SHIFT => Key::Shift,
         VstKeyCode::KEY_CONTROL => Key::Control,
         VstKeyCode::KEY_ALT => Key::Alt,
-        VstKeyCode::KEY_EQUALS => return None,
+        VstKeyCode::KEY_EQUALS => Key::Character('='.to_string()),
         VstKeyCode::KEY_CONTEXTMENU => Key::ContextMenu,
         VstKeyCode::KEY_MEDIA_PLAY => Key::MediaPlay,
         VstKeyCode::KEY_MEDIA_STOP => Key::MediaStop,
@@ -190,7 +200,7 @@ fn vst_code_to_code(key_code: VstKeyCode) -> Option<Code> {
         VstKeyCode::KEY_NUMPAD9 => Code::Numpad9,
         VstKeyCode::KEY_MULTIPLY => Code::NumpadMultiply,
         VstKeyCode::KEY_ADD => Code::NumpadAdd,
-        VstKeyCode::KEY_SEPARATOR => return None,
+        VstKeyCode::KEY_SEPARATOR => return None, // Not sure what to do here
         VstKeyCode::KEY_SUBTRACT => Code::NumpadSubtract,
         VstKeyCode::KEY_DECIMAL => Code::NumpadDecimal,
         VstKeyCode::KEY_DIVIDE => Code::NumpadDivide,
