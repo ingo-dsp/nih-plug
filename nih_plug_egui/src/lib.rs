@@ -381,17 +381,18 @@ struct EguiEditorHandle {
 }
 impl SpawnedWindow for EguiEditorHandle {
     fn resize(&self, logical_width: f32, logical_height: f32, scale_factor: f32) {
+
+        // store new size in egui_state
+        let unscaled_width = logical_width / scale_factor;
+        let unscaled_height = logical_height / scale_factor;
+        self.egui_state.size.store((unscaled_width as u32, unscaled_height as u32));
+
         // resize spawned window
         let logical_size = baseview::Size {
             width: logical_width as f64,
             height: logical_height as f64,
         };
         self.window.resize(logical_size, scale_factor);
-
-        // store new size in egui_state
-        let unscaled_width = logical_width / scale_factor;
-        let unscaled_height = logical_height / scale_factor;
-        self.egui_state.size.store((unscaled_width as u32, unscaled_height as u32));
     }
 }
 
