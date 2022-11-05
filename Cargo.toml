@@ -109,7 +109,7 @@ keyboard-types = { version = "0.6", default-features = false }
 clap = { version = "3.2", features = ["derive"], optional = true }
 cpal = { version = "0.14.1", optional = true }
 # The current upstream jack panics when it can't load the JACK library, which breaks the backend fallback
-jack = { git = "https://github.com/robbert-vdh/rust-jack.git", branch = "feature/handle-library-failure", optional = true }
+jack = { git = "https://github.com/robbert-vdh/rust-jack.git", rev = "1b4055a7b9f6f6bab7646f3dc10cc9355791d706", optional = true }
 rtrb = { version = "0.2.2", optional = true }
 
 # Used for the `vst3` feature
