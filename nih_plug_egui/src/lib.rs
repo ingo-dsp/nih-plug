@@ -10,7 +10,7 @@ use std::ops::{Deref, DerefMut};
 use baseview::gl::GlConfig;
 use baseview::{Size, WindowHandle, WindowOpenOptions, WindowScalePolicy};
 use crossbeam::atomic::AtomicCell;
-use egui::{Context, Event, Key, Modifiers, RawInput, Vec2};
+use egui::{ClipboardData, ClipboardMime, Context, Event, Key, Modifiers, RawInput, Vec2};
 use egui_baseview::{EguiWindow, is_copy_command, is_cut_command, is_paste_command, translate_virtual_key_code};
 use nih_plug::params::persist::PersistentField;
 use nih_plug::prelude::{Editor, GuiContext, ParamSetter, ParentWindowHandle};
@@ -337,13 +337,16 @@ impl EguiKeyboardInput {
                 events.push(egui::Event::Copy);
             } else if is_paste_command(modifiers, event.code) {
                 if let Some(clipboard_ctx) = clipboard_ctx {
-                    match clipboard_ctx.get_contents() {
-                        Ok(contents) => {
-                            events.push(egui::Event::Text(contents))
-                        }
-                        Err(err) => {
-                            eprintln!("Paste error: {}", err);
-                        }
+                    if let Ok(contents) = clipboard_ctx.get_contents() {
+                        events.push(egui::Event::Paste(contents));
+                    }
+                    if let Ok(data) = clipboard_ctx.get_mime_contents("application/dspstudio") {
+                        events.push(
+                            egui::Event::PasteMime(ClipboardData {
+                                data,
+                                mime: ClipboardMime::Specific("application/dspstudio".to_string())
+                            })
+                        );
                     }
                 }
             } else if let keyboard_types::Key::Character(written) = &event.key {
