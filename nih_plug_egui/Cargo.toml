@@ -21,7 +21,7 @@ nih_plug = { path = ".." }
 
 baseview = { git = "https://github.com/ingo-dsp/baseview.git", branch = "develop-ingo" }
 keyboard-types = "0.6"
-copypasta = "0.8"
+copypasta = { git = "https://github.com/ingo-dsp/copypasta.git", branch = "develop-ingo" }
 crossbeam = "0.8"
 # The `egui-default-features` feature enables the default features. This makes
 # it possible to opt out of this if needed.
