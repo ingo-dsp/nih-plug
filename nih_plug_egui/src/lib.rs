@@ -6,6 +6,7 @@
 #![allow(clippy::type_complexity)]
 
 use std::borrow::{Borrow, BorrowMut};
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use baseview::gl::GlConfig;
 use baseview::{Size, WindowHandle, WindowOpenOptions, WindowScalePolicy};
@@ -25,6 +26,7 @@ compile_error!("There's currently no software rendering support for egui");
 
 /// Re-export for convenience.
 pub use egui;
+use keyboard_types::KeyboardEvent;
 use nih_plug::editor::SpawnedWindow;
 
 pub mod widgets;
@@ -78,17 +80,37 @@ where
 #[derive(Clone)]
 pub enum AcceptableKeys {
     All,
-    None,
+    Specific(Vec<(egui::Modifiers, egui::Key)>),
 }
-impl Default for AcceptableKeys { fn default() -> Self { AcceptableKeys::None } }
+impl Default for AcceptableKeys { fn default() -> Self { AcceptableKeys::none() } }
 impl AcceptableKeys {
-    pub fn accepts(&self, _key: &keyboard_types::Key) -> bool {
+    pub fn none() -> AcceptableKeys {
+        AcceptableKeys::Specific(Default::default())
+    }
+    pub fn specific(specific: Vec<(egui::Modifiers, egui::Key)>) -> AcceptableKeys {
+        AcceptableKeys::Specific(specific)
+    }
+    pub fn accepts(&self, modifiers: egui::Modifiers, key: &egui::Key) -> bool {
         match self {
-            AcceptableKeys::All => true,
-            AcceptableKeys::None => false
+            AcceptableKeys::All => {
+                true
+            }
+            AcceptableKeys::Specific(specific) => {
+                specific.into_iter().any(|(required_modifiers, specific_key)| specific_key == key && match_modifiers_at_least(modifiers, *required_modifiers))
+            }
         }
     }
 }
+
+fn match_modifiers_at_least(current_modifiers: Modifiers, required_modifiers: Modifiers) -> bool {
+    if required_modifiers.ctrl && !current_modifiers.ctrl { return false; }
+    if required_modifiers.alt && !current_modifiers.alt { return false; }
+    if required_modifiers.command && !current_modifiers.command { return false; }
+    if required_modifiers.mac_cmd && !current_modifiers.mac_cmd { return false; }
+    if required_modifiers.shift && !current_modifiers.shift { return false; }
+    true
+}
+
 /// State for an `nih_plug_egui` editor.
 #[derive(Serialize, Deserialize)]
 pub struct EguiState {
@@ -271,11 +293,15 @@ where
 
 impl<T> EguiEditor<T> where T: 'static + Send + Sync {
     fn handle_keyboard_event(&self, keyboard_event: &keyboard_types::KeyboardEvent) -> bool {
-        if self.egui_state.acceptable_keys.try_lock().map(|x| x.deref().clone()).unwrap_or_default().accepts(&keyboard_event.key) {
-            if let Ok(mut plugin_keyboard_events) = self.plugin_keyboard_events.try_lock() {
-                if let Ok(mut clipboard_ctx) = self.clipboard_ctx.try_lock() {
-                    plugin_keyboard_events.push(EguiKeyboardInput::from_keyboard_event(keyboard_event, clipboard_ctx.as_mut()));
-                    return true;
+        let acceptable_keys = self.egui_state.acceptable_keys.try_lock().map(|x| x.deref().clone()).unwrap_or_default();
+        if let Some(translated_key) = translate_virtual_key_code(keyboard_event.code) {
+            let translated_mods = translate_modifiers(&keyboard_event.modifiers);
+            if acceptable_keys.accepts(translated_mods, &translated_key) {
+                if let Ok(mut plugin_keyboard_events) = self.plugin_keyboard_events.try_lock() {
+                    if let Ok(mut clipboard_ctx) = self.clipboard_ctx.try_lock() {
+                        plugin_keyboard_events.push(EguiKeyboardInput::from_keyboard_event(keyboard_event, clipboard_ctx.as_mut()));
+                        return true;
+                    }
                 }
             }
         }
@@ -290,13 +316,7 @@ struct EguiKeyboardInput {
 impl EguiKeyboardInput {
     fn from_keyboard_event(event: &keyboard_types::KeyboardEvent, clipboard_ctx: Option<&mut copypasta::ClipboardContext>) -> EguiKeyboardInput {
         let mut events = vec![];
-        let mut modifiers = Modifiers {
-            alt: event.modifiers.contains(keyboard_types::Modifiers::ALT),
-            command: event.modifiers.contains(keyboard_types::Modifiers::META) || (!cfg!(target_os = "macos") && event.modifiers.contains(keyboard_types::Modifiers::CONTROL)),
-            ctrl: event.modifiers.contains(keyboard_types::Modifiers::CONTROL) || (!cfg!(target_os = "macos") && event.modifiers.contains(keyboard_types::Modifiers::META)),
-            mac_cmd: cfg!(target_os = "macos") && event.modifiers.contains(keyboard_types::Modifiers::META),
-            shift: event.modifiers.contains(keyboard_types::Modifiers::SHIFT),
-        };
+        let mut modifiers = translate_modifiers(&event.modifiers);
 
         use keyboard_types::Code;
 
@@ -408,5 +428,15 @@ impl Drop for EguiEditorHandle {
         self.egui_state.open.store(false, Ordering::Release);
         // XXX: This should automatically happen when the handle gets dropped, but apparently not
         self.window.close();
+    }
+}
+
+pub fn translate_modifiers(modifiers: &keyboard_types::Modifiers) -> Modifiers {
+    Modifiers {
+        alt: modifiers.contains(keyboard_types::Modifiers::ALT),
+        command: modifiers.contains(keyboard_types::Modifiers::META) || (!cfg!(target_os = "macos") && modifiers.contains(keyboard_types::Modifiers::CONTROL)),
+        ctrl: modifiers.contains(keyboard_types::Modifiers::CONTROL) || (!cfg!(target_os = "macos") && modifiers.contains(keyboard_types::Modifiers::META)),
+        mac_cmd: cfg!(target_os = "macos") && modifiers.contains(keyboard_types::Modifiers::META),
+        shift: modifiers.contains(keyboard_types::Modifiers::SHIFT),
     }
 }

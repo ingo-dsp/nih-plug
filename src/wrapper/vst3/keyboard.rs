@@ -5,22 +5,18 @@ pub fn create_vst_keyboard_event(vst_character: vst3_sys::base::char16, vst_key_
     let key_code = VstKeyCode::try_from(vst_key_code).ok();
 
     let mut code = key_code.and_then(|x| vst_code_to_code(x));
-    let mut key = if vst_key_code >= VKEY_FIRST_ASCII || vst_key_code == 0 {
-        vst_character_to_char(vst_character).map(|x| Key::Character(x.to_string()))
-    } else {
-        None
-    };
-
-    if key.is_none() {
-        key = key_code.and_then(|x| vst_code_to_key(x));
-    }
+    let mut key = key_code.and_then(|x| vst_code_to_key(x));
 
     if key.is_none() {
         if vst_key_code >= VKEY_FIRST_ASCII {
             key = char::from_u32(vst_key_code as u32 - 48).map(|x| Key::Character(x.to_string()));
         }
     }
-
+    if key.is_none() {
+        if vst_key_code >= VKEY_FIRST_ASCII || vst_key_code == 0 {
+            key = vst_character_to_char(vst_character).map(|x| Key::Character(x.to_string()))
+        };
+    }
     let key = key.ok_or(())?;
     if code.is_none() {
         if let Key::Character(x) = &key {
