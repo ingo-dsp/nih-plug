@@ -27,6 +27,7 @@ compile_error!("There's currently no software rendering support for egui");
 /// Re-export for convenience.
 pub use egui;
 use keyboard_types::KeyboardEvent;
+use egui_baseview::window::{EguiKeyboardInput, translate_modifiers};
 use nih_plug::editor::SpawnedWindow;
 
 pub mod widgets;
@@ -239,7 +240,8 @@ where
                     let mut events = vec![];
                     std::mem::swap(&mut *plugin_keyboard_events, &mut events);
                     for event in events.into_iter() {
-                        event.apply(egui_ctx);
+                        let mut input_mut = egui_ctx.input_mut();
+                        event.apply_on_input(input_mut.deref_mut());
                     }
                 }
 
@@ -309,94 +311,6 @@ impl<T> EguiEditor<T> where T: 'static + Send + Sync {
     }
 }
 
-struct EguiKeyboardInput {
-    events: Vec<egui::Event>,
-    modifiers: Modifiers,
-}
-impl EguiKeyboardInput {
-    fn from_keyboard_event(event: &keyboard_types::KeyboardEvent, clipboard_ctx: Option<&mut copypasta::ClipboardContext>) -> EguiKeyboardInput {
-        let mut events = vec![];
-        let mut modifiers = translate_modifiers(&event.modifiers);
-
-        use keyboard_types::Code;
-
-        let pressed = event.state == keyboard_types::KeyState::Down;
-
-        match event.code {
-            Code::ShiftLeft | Code::ShiftRight => modifiers.shift = pressed,
-            Code::ControlLeft | Code::ControlRight => {
-                modifiers.ctrl = pressed;
-
-                #[cfg(not(target_os = "macos"))]
-                {
-                    modifiers.command = pressed;
-                }
-            }
-            Code::AltLeft | Code::AltRight => modifiers.alt = pressed,
-            Code::MetaLeft | Code::MetaRight => {
-                #[cfg(target_os = "macos")]
-                {
-                    modifiers.mac_cmd = pressed;
-                    modifiers.command = pressed;
-                }
-                () // prevent `rustfmt` from breaking this
-            }
-            _ => (),
-        }
-
-        if let Some(key) = translate_virtual_key_code(event.code) {
-            events.push(egui::Event::Key { key, pressed, modifiers });
-        }
-
-        if pressed {
-            // VirtualKeyCode::Paste etc in winit are broken/untrustworthy,
-            // so we detect these things manually:
-            if is_cut_command(modifiers, event.code) {
-                events.push(egui::Event::Cut);
-            } else if is_copy_command(modifiers, event.code) {
-                events.push(egui::Event::Copy);
-            } else if is_paste_command(modifiers, event.code) {
-                if let Some(clipboard_ctx) = clipboard_ctx {
-                    if let Ok(contents) = clipboard_ctx.get_contents() {
-                        events.push(egui::Event::Paste(contents));
-                    }
-                    if let Ok(data) = clipboard_ctx.get_mime_contents("application/dspstudio") {
-                        events.push(
-                            egui::Event::PasteMime(ClipboardData {
-                                data,
-                                mime: ClipboardMime::Specific("application/dspstudio".to_string())
-                            })
-                        );
-                    }
-                }
-            } else if let keyboard_types::Key::Character(written) = &event.key {
-                if !modifiers.ctrl && !modifiers.command {
-                    events.push(egui::Event::Text(written.clone()));
-                }
-            }
-        }
-        EguiKeyboardInput {
-            events,
-            modifiers
-        }
-    }
-
-    fn apply(self, ctx: &egui::Context) {
-        let mut input_mut = ctx.input_mut();
-        for event in self.events {
-            if let Event::Key { key, pressed, .. } = &event {
-                if *pressed {
-                    input_mut.keys_down.insert(*key);
-                } else {
-                    input_mut.keys_down.remove(key);
-                }
-            }
-            input_mut.raw.events.push(event.clone());
-            input_mut.events.push(event);
-        }
-        input_mut.modifiers = self.modifiers;
-    }
-}
 /// The window handle used for [`EguiEditor`].
 struct EguiEditorHandle {
     egui_state: Arc<EguiState>,
@@ -428,15 +342,5 @@ impl Drop for EguiEditorHandle {
         self.egui_state.open.store(false, Ordering::Release);
         // XXX: This should automatically happen when the handle gets dropped, but apparently not
         self.window.close();
-    }
-}
-
-pub fn translate_modifiers(modifiers: &keyboard_types::Modifiers) -> Modifiers {
-    Modifiers {
-        alt: modifiers.contains(keyboard_types::Modifiers::ALT),
-        command: modifiers.contains(keyboard_types::Modifiers::META) || (!cfg!(target_os = "macos") && modifiers.contains(keyboard_types::Modifiers::CONTROL)),
-        ctrl: modifiers.contains(keyboard_types::Modifiers::CONTROL) || (!cfg!(target_os = "macos") && modifiers.contains(keyboard_types::Modifiers::META)),
-        mac_cmd: cfg!(target_os = "macos") && modifiers.contains(keyboard_types::Modifiers::META),
-        shift: modifiers.contains(keyboard_types::Modifiers::SHIFT),
     }
 }
