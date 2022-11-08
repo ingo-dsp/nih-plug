@@ -318,10 +318,18 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
                 }
             };
 
+            let request_keyboard_focus = {
+                // TODO: We seem to need this for the Carla Linux VST Host. -> Does this harm other VST Hosts in Linux?? -> Test this!
+                //cfg!(target_os = "linux")
+                
+                // TODO: Carla needs us to restore keyboard focus everytime the window lost focus and is activated again...
+                false 
+            };
+
             *editor_handle = Some(self.editor.lock().spawn(
                 ParentWindowHandle { handle },
                 self.inner.clone().make_gui_context(),
-                false
+                request_keyboard_focus
             ));
             *self.inner.plug_view.write() = Some(ObjectPtr::from(self));
 
@@ -413,8 +421,8 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
         kResultOk
     }
 
-    unsafe fn on_focus(&self, _state: TBool) -> tresult {
-        kResultOk
+    unsafe fn on_focus(&self, state: TBool) -> tresult {
+        return kResultOk;
     }
 
     unsafe fn set_frame(&self, frame: *mut c_void) -> tresult {
