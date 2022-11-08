@@ -247,7 +247,6 @@ where
                     std::mem::swap(&mut *plugin_keyboard_events, &mut events);
                     for event in events.into_iter() {
                         let mut input_mut = egui_ctx.input_mut();
-                        log::warn!("event: {:?}", event);
                         event.apply_on_input(input_mut.deref_mut());
                     }
                 }
