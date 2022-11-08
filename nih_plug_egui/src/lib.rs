@@ -26,7 +26,7 @@ compile_error!("There's currently no software rendering support for egui");
 
 /// Re-export for convenience.
 pub use egui;
-use keyboard_types::KeyboardEvent;
+use keyboard_types::{Code, KeyboardEvent};
 use egui_baseview::window::{EguiKeyboardInput, translate_modifiers};
 use nih_plug::editor::SpawnedWindow;
 
@@ -99,6 +99,12 @@ impl AcceptableKeys {
             AcceptableKeys::Specific(specific) => {
                 specific.into_iter().any(|(required_modifiers, specific_key)| specific_key == key && match_modifiers_at_least(modifiers, *required_modifiers))
             }
+        }
+    }
+    pub fn accepts_all(&self) -> bool {
+        match self {
+            AcceptableKeys::All => true,
+            AcceptableKeys::Specific(specific) => false,
         }
     }
 }
@@ -241,6 +247,7 @@ where
                     std::mem::swap(&mut *plugin_keyboard_events, &mut events);
                     for event in events.into_iter() {
                         let mut input_mut = egui_ctx.input_mut();
+                        log::warn!("event: {:?}", event);
                         event.apply_on_input(input_mut.deref_mut());
                     }
                 }
@@ -295,15 +302,30 @@ where
 
 impl<T> EguiEditor<T> where T: 'static + Send + Sync {
     fn handle_keyboard_event(&self, keyboard_event: &keyboard_types::KeyboardEvent) -> bool {
-        let acceptable_keys = self.egui_state.acceptable_keys.try_lock().map(|x| x.deref().clone()).unwrap_or_default();
-        if let Some(translated_key) = translate_virtual_key_code(keyboard_event.code) {
-            let translated_mods = translate_modifiers(&keyboard_event.modifiers);
-            if acceptable_keys.accepts(translated_mods, &translated_key) {
-                if let Ok(mut plugin_keyboard_events) = self.plugin_keyboard_events.try_lock() {
-                    if let Ok(mut clipboard_ctx) = self.clipboard_ctx.try_lock() {
-                        plugin_keyboard_events.push(EguiKeyboardInput::from_keyboard_event(keyboard_event, clipboard_ctx.as_mut()));
-                        return true;
-                    }
+        let is_modifier_key = {
+            match keyboard_event.code {
+                Code::ShiftLeft | Code::ShiftRight |
+                Code::ControlLeft | Code::ControlRight |
+                Code::AltLeft | Code::AltRight |
+                Code::MetaLeft | Code::MetaRight => true,
+                _ => false,
+            }
+        };
+        let translated_mods = translate_modifiers(&keyboard_event.modifiers);
+        let is_acceptable_key = is_modifier_key || { // always accept modifiers, because we need to keep track of which are pressed.
+            let acceptable_keys = self.egui_state.acceptable_keys.try_lock().map(|x| x.deref().clone());
+            let acceptable_keys = acceptable_keys.unwrap_or_default();
+            if let Some(translated_key) = translate_virtual_key_code(keyboard_event.code) {
+                acceptable_keys.accepts(translated_mods, &translated_key)
+            } else {
+                acceptable_keys.accepts_all()
+            }
+        };
+        if is_acceptable_key {
+            if let Ok(mut plugin_keyboard_events) = self.plugin_keyboard_events.try_lock() {
+                if let Ok(mut clipboard_ctx) = self.clipboard_ctx.try_lock() {
+                    plugin_keyboard_events.push(EguiKeyboardInput::from_keyboard_event(keyboard_event, clipboard_ctx.as_mut()));
+                    return true;
                 }
             }
         }
