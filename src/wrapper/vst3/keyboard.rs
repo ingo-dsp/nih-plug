@@ -1,31 +1,48 @@
 use keyboard_types::*;
+use vst3_sys::base::char16;
 
-pub fn create_vst_keyboard_event(vst_character: vst3_sys::base::char16, vst_key_code: i16, vst_modifiers: i16, state: KeyState) -> Result<KeyboardEvent, ()> {
+pub fn create_vst_keyboard_event(key_char: vst3_sys::base::char16, virtual_key_code: i16, vst_modifiers: i16, state: KeyState) -> Result<KeyboardEvent, ()> {
+
+    let key_code = VstKeyCode::try_from(virtual_key_code).ok();
+
+    let virtual_keycode_to_char = if key_char != 0 {
+        convert_char16(key_char)
+    } else {
+        if virtual_key_code >= VKEY_FIRST_ASCII {
+            convert_char16(virtual_key_code - VKEY_FIRST_ASCII + 0x30)
+        } else if key_code == Some(VstKeyCode::KEY_SPACE) {
+            Some(' ')
+        } else {
+            None
+        }
+    };
+
+    // NOTE: KEY_EQUALS is broken on windows? Test if this workaround is really necessary!
+    let (result_key, result_code) = if let Some(key_code) = key_code {
+        if key_code != VstKeyCode::KEY_EQUALS {
+            (vst_code_to_key(key_code), vst_code_to_code(key_code))
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+    let key = result_key.or_else(|| {
+        virtual_keycode_to_char.map(|ch| Key::Character(ch.to_string()))
+    }).unwrap_or(Key::Unidentified);
+
+    let code = result_code.or_else(|| {
+        virtual_keycode_to_char.and_then(|ch| char_to_code(ch))
+    }).unwrap_or(Code::Unidentified);
+
     let modifiers: Modifiers = VstKeyModifier::from_bits(vst_modifiers as usize).ok_or(())?.into();
-    let key_code = VstKeyCode::try_from(vst_key_code).ok();
-
-    let mut code = key_code.and_then(|x| vst_code_to_code(x));
-    let mut key = key_code.and_then(|x| vst_code_to_key(x));
-
-    if key.is_none() {
-        if vst_key_code >= VKEY_FIRST_ASCII {
-            key = char::from_u32(vst_key_code as u32 - 48).map(|x| Key::Character(x.to_string()));
-        }
-    }
-    if key.is_none() {
-        if vst_key_code >= VKEY_FIRST_ASCII || vst_key_code == 0 {
-            key = vst_character_to_char(vst_character).map(|x| Key::Character(x.to_string()))
-        };
-    }
-    let key = key.ok_or(())?;
-    if code.is_none() {
-        if let Key::Character(x) = &key {
-            code = char_to_code(x.chars().next().unwrap());
-        }
-    }
-    let code = code.unwrap_or(Code::Unidentified);
     let location = code_to_location(code);
+
     Ok(KeyboardEvent { code, key, location, modifiers, state, is_composing: false, repeat: false })
+}
+
+fn convert_char16(key: char16) -> Option<char> {
+    char::decode_utf16([key as u16]).next().and_then(|x| x.ok())
 }
 
 fn char_to_code(ch: char) -> Option<Code> {
@@ -72,13 +89,6 @@ fn char_to_code(ch: char) -> Option<Code> {
             return None;
         }
     })
-}
-
-fn vst_character_to_char(vst_character: vst3_sys::base::char16) -> Option<char> {
-    if vst_character >= 20 { // starting with printable ascii range
-        return char::decode_utf16([vst_character as u16]).next().and_then(|x| x.ok());
-    }
-    None
 }
 
 fn vst_code_to_key(key_code: VstKeyCode) -> Option<Key> {
@@ -238,7 +248,7 @@ fn vst_code_to_code(key_code: VstKeyCode) -> Option<Code> {
 // translated from "VirtualKeyCodes" data structure in vst3 api - see https://steinbergmedia.github.io/vst3_doc/base/namespaceSteinberg.html
 #[allow(non_camel_case_types)]
 #[allow(dead_code)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 #[repr(i16)]
 enum VstKeyCode {
     KEY_BACK = 1, KEY_TAB, KEY_CLEAR, KEY_RETURN,
