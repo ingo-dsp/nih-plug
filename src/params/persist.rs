@@ -2,9 +2,9 @@
 //! information.
 
 /// Re-export for use in the [`Params`][super::Params] proc-macro.
-pub use serde_json::from_str as deserialize_field;
+pub use bincode::deserialize as deserialize_field;
 /// Re-export for use in the [`Params`][super::Params] proc-macro.
-pub use serde_json::to_string as serialize_field;
+pub use bincode::serialize as serialize_field;
 
 /// Handles the functionality needed for persisting a non-parameter fields in a plugin's state.
 /// These types can be used with [`Params`][super::Params]' `#[persist = "..."]` attributes.

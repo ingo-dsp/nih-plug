@@ -454,11 +454,11 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                 #param_map_tokens
             }
 
-            fn serialize_fields(&self) -> ::std::collections::BTreeMap<String, String> {
+            fn serialize_fields(&self) -> ::std::collections::BTreeMap<String, Vec<u8>> {
                 #serialize_fields_tokens
             }
 
-            fn deserialize_fields(&self, serialized: &::std::collections::BTreeMap<String, String>) {
+            fn deserialize_fields(&self, serialized: &::std::collections::BTreeMap<String, Vec<u8>>) {
                 #deserialize_fields_tokens
             }
         }

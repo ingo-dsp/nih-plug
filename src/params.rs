@@ -277,7 +277,7 @@ pub unsafe trait Params: 'static + Send + Sync {
     /// Serialize all fields marked with `#[persist = "stable_name"]` into a hash map containing
     /// JSON-representations of those fields so they can be written to the plugin's state and
     /// recalled later. This uses [`persist::serialize_field()`] under the hood.
-    fn serialize_fields(&self) -> BTreeMap<String, String> {
+    fn serialize_fields(&self) -> BTreeMap<String, Vec<u8>> {
         BTreeMap::new()
     }
 
@@ -287,7 +287,7 @@ pub unsafe trait Params: 'static + Send + Sync {
     /// `Mutex`. This gets called when the plugin's state is being restored. This uses
     /// [`persist::deserialize_field()`] under the hood.
     #[allow(unused_variables)]
-    fn deserialize_fields(&self, serialized: &BTreeMap<String, String>) {}
+    fn deserialize_fields(&self, serialized: &BTreeMap<String, Vec<u8>>) {}
 }
 
 /// This may be useful when building generic UIs using nested `Params` objects.
@@ -296,11 +296,11 @@ unsafe impl<P: Params> Params for Arc<P> {
         self.as_ref().param_map()
     }
 
-    fn serialize_fields(&self) -> BTreeMap<String, String> {
+    fn serialize_fields(&self) -> BTreeMap<String, Vec<u8>> {
         self.as_ref().serialize_fields()
     }
 
-    fn deserialize_fields(&self, serialized: &BTreeMap<String, String>) {
+    fn deserialize_fields(&self, serialized: &BTreeMap<String, Vec<u8>>) {
         self.as_ref().deserialize_fields(serialized)
     }
 }

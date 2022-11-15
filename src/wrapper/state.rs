@@ -50,7 +50,7 @@ pub struct PluginState {
     ///
     /// The individual fields are also serialized as JSON so they can safely be restored
     /// independently of the other fields.
-    pub fields: BTreeMap<String, String>,
+    pub fields: BTreeMap<String, Vec<u8>>,
 }
 
 /// Create a parameters iterator from the hashtables stored in the plugin wrappers. This avoids
@@ -137,16 +137,16 @@ pub(crate) unsafe fn serialize_json<'a, P: Plugin>(
     params_iter: impl IntoIterator<Item = (&'a String, ParamPtr)>,
 ) -> Result<Vec<u8>> {
     let plugin_state = serialize_object::<P>(plugin_params, params_iter);
-    let json = serde_json::to_vec(&plugin_state).context("Could not format as JSON")?;
+    let binary = bincode::serialize(&plugin_state).context("Could not serialize as bincode")?;
 
     #[cfg(feature = "zstd")]
     {
-        zstd::encode_all(json.as_slice(), zstd::DEFAULT_COMPRESSION_LEVEL)
+        zstd::encode_all(binary.as_slice(), zstd::DEFAULT_COMPRESSION_LEVEL)
             .context("Could not compress state")
     }
     #[cfg(not(feature = "zstd"))]
     {
-        Ok(json)
+        Ok(binary)
     }
 }
 
@@ -240,7 +240,7 @@ pub(crate) unsafe fn deserialize_json<P: Plugin>(
 ) -> bool {
     #[cfg(feature = "zstd")]
     let mut state: PluginState = match zstd::decode_all(state) {
-        Ok(decompressed) => match serde_json::from_slice(decompressed.as_slice()) {
+        Ok(decompressed) => match bincode::deserialize(decompressed.as_slice()) {
             Ok(s) => {
                 nih_log!("Deserialized compressed");
                 s
@@ -252,7 +252,7 @@ pub(crate) unsafe fn deserialize_json<P: Plugin>(
         },
         // Uncompressed state files can still be loaded after enabling this feature to prevent
         // breaking existing plugin instances
-        Err(zstd_err) => match serde_json::from_slice(state) {
+        Err(zstd_err) => match bincode::deserialize(state) {
             Ok(s) => {
                 nih_log!("Deserialized uncompressed");
                 s
@@ -270,7 +270,7 @@ pub(crate) unsafe fn deserialize_json<P: Plugin>(
     };
 
     #[cfg(not(feature = "zstd"))]
-    let mut state: PluginState = match serde_json::from_slice(state) {
+    let mut state: PluginState = match bincode::deserialize(state) {
         Ok(s) => s,
         Err(err) => {
             nih_debug_assert_failure!("Error while deserializing state: {}", err);
