@@ -6,6 +6,55 @@ new and what's changed, this document lists all breaking changes in reverse
 chronological order. If a new feature did not require any changes to existing
 code then it will not be listed here.
 
+## [2022-11-17]
+
+- The `Params` derive macro now also properly supports persistent fields in
+  `#[nested]` parameter structs. This takes `#[nested(id_prefix = "...")]` and
+  `#[nested(array)]` into account to allow multiple copies of a persistent
+  field. This may break existing usages as serialized field data without a
+  matching preffix or suffix is no longer passed to the child object.
+
+## [2022-11-17]
+
+- The order of `#[nested]` parameters in the parameter list now always follows
+  the declaration order instead of nested parameters being ordered below regular
+  parameters.
+
+## [2022-11-08]
+
+- The `Param::{next_previous}{_step,_normalized_step}()` functions now take an
+  additional boolean argument to indicate that the range must be finer. This is
+  used for floating point parameters to chop the range up into smaller segments
+  when using Shift+scroll.
+
+## [2022-11-07]
+
+- `Param::plain_value()` and `Param::normalized_value()` have been renamed to
+  `Param::modulated_plain_value()` and `Param::modulated_normalized_value()`.
+  These functions are only used when creating GUIs, so this shouldn't break any
+  other plugin code. This change was made to make it extra clear that these
+  values do include monophonic modulation, as it's very easy to mistakenly use
+  the wrong value when handling user input in GUI widgets.
+
+## [2022-11-06]
+
+- `nih_plug_vizia::create_vizia_editor_without_theme()` has been removed, and
+  `nih_plug_vizia::create_vizia_editor()` has gained a new argument to specify
+  what amount of theming to apply. This can now also be used to completely
+  disable all theming include Vizia's built-in theme.
+- `nih_plug_vizia::create_vizia_editor()` no longer registers any fonts by
+  default. Even when those fonts are not used, they will still be embedded in
+  the binary, increasing its size by several megabytes. Instead, you can now
+  register individual fonts by calling the
+  `nih_plug_vizia::assets::register_*()` functions. This means that you _must_
+  call `nih_plug_vizia::assets::register_noto_sans_light()` for the default
+  theming to work. All of the plugins in this repo also use
+  `nih_plug_vizia::assets::register_noto_sans_thin()` as a title font.
+- Additionally, the Vizia fork has been updated to not register _any_ default
+  fonts for the same reason. If you previously relied on Vizia's default Roboto
+  font, then you must now call `nih_plug_vizia::vizia_assets::register_roboto()`
+  at the start of your process function.
+
 ## [2022-10-23]
 
 - `nih_plug_vizia` has been updated. Widgets with custom drawing code will need

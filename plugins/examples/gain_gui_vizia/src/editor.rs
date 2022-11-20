@@ -2,17 +2,12 @@ use atomic_float::AtomicF32;
 use nih_plug::prelude::{util, Editor};
 use nih_plug_vizia::vizia::prelude::*;
 use nih_plug_vizia::widgets::*;
-use nih_plug_vizia::{assets, create_vizia_editor, ViziaState};
+use nih_plug_vizia::{assets, create_vizia_editor, ViziaState, ViziaTheming};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::GainParams;
-
-/// VIZIA uses points instead of pixels for text
-const POINT_SCALE: f32 = 0.75;
-
-const STYLE: &str = r#""#;
 
 #[derive(Lens)]
 struct Data {
@@ -32,8 +27,9 @@ pub(crate) fn create(
     peak_meter: Arc<AtomicF32>,
     editor_state: Arc<ViziaState>,
 ) -> Option<Box<dyn Editor>> {
-    create_vizia_editor(editor_state, move |cx, _| {
-        cx.add_theme(STYLE);
+    create_vizia_editor(editor_state, ViziaTheming::Custom, move |cx, _| {
+        assets::register_noto_sans_light(cx);
+        assets::register_noto_sans_thin(cx);
 
         Data {
             params: params.clone(),
@@ -46,7 +42,7 @@ pub(crate) fn create(
         VStack::new(cx, |cx| {
             Label::new(cx, "Gain GUI")
                 .font(assets::NOTO_SANS_THIN)
-                .font_size(40.0 * POINT_SCALE)
+                .font_size(30.0)
                 .height(Pixels(50.0))
                 .child_top(Stretch(1.0))
                 .child_bottom(Pixels(0.0));

@@ -27,13 +27,12 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
     // parameters. For the `persist` function we'll create functions that serialize and deserialize
     // those fields individually (so they can be added and removed independently of eachother) using
     // JSON. The `nested` fields should also implement the `Params` trait and their fields will be
-    // inherited and added to this field's lists.  We'll also enforce that there are no duplicate
-    // keys at compile time.
+    // inherited and added to this field's param mapping list. The order follows the declaration
+    // order We'll also enforce that there are no duplicate keys for `id` fields at compile time.
     // TODO: This duplication check doesn't work for nested fields since we don't know anything
     //       about the fields on the nested structs
     let mut params: Vec<Param> = Vec::new();
     let mut persistent_fields: Vec<PersistentField> = Vec::new();
-    let mut nested_params: Vec<NestedParams> = Vec::new();
     for field in fields.named {
         let field_name = match &field.ident {
             Some(ident) => ident,
@@ -62,7 +61,10 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                         // This is a vector since we want to preserve the order. If structs get
                         // large enough to the point where a linear search starts being expensive,
                         // then the plugin should probably start splitting up their parameters.
-                        if params.iter().any(|p| p.id == s) {
+                        if params.iter().any(|p| match p {
+                            Param::Single { id, .. } => &s == id,
+                            _ => false,
+                        }) {
                             return syn::Error::new(
                                 field.span(),
                                 "Multiple parameters with the same ID found",
@@ -71,7 +73,7 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                             .into();
                         }
 
-                        params.push(Param {
+                        params.push(Param::Single {
                             id: s,
                             field: field_name.clone(),
                         });
@@ -130,7 +132,7 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                     }
                 };
             } else if attr.path.is_ident("nested") {
-                // This one is more complicated. Support an `array` attribute, an `id_prefix =
+                // This one is more complicated. Supports an `array` attribute, an `id_prefix =
                 // "foo"` attribute, and a `group = "group name"` attribute. All are optional, and
                 // the first two are mutually exclusive.
                 let mut nested_array = false;
@@ -204,7 +206,7 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                             }
                         }
 
-                        nested_params.push(match (nested_array, nested_id_prefix) {
+                        params.push(Param::Nested(match (nested_array, nested_id_prefix) {
                             (true, None) => NestedParams::Array {
                                 field: field_name.clone(),
                                 group: nested_group,
@@ -226,7 +228,7 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                                 .to_compile_error()
                                 .into()
                             }
-                        });
+                        }));
 
                         processed_attribute = true;
                     }
@@ -247,97 +249,15 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
     // The next step is build the gathered information into tokens that can be spliced into a
     // `Params` implementation
     let param_map_tokens = {
-        // `param_map` adds the parameters from this struct, and then handles the nested tokens.
-        let param_mapping_self_tokens = params.into_iter().map(
-            |Param {field, id}| quote! { (String::from(#id), self.#field.as_ptr(), String::new()) },
-        );
-
-        // How nested parameters are handled depends on the `NestedParams` variant.
-        // These are pairs of `(parameter_id, param_ptr, param_group)`. The specific
-        // parameter types know how to convert themselves into the correct ParamPtr variant.
-        // Top-level parameters have no group, and we'll prefix the group name specified in
-        // the `#[nested(...)]` attribute to fields coming from nested groups
-        let param_mapping_nested_tokens = nested_params.iter().map(|nested| match nested {
-            // TODO: No idea how to splice this as an `Option<&str>`, so this involves some
-            //       copy-pasting
-            NestedParams::Inline { field, group: Some(group) } => quote! {
-                param_map.extend(self.#field.param_map().into_iter().map(|(param_id, param_ptr, nested_group_name)| {
-                    if nested_group_name.is_empty() {
-                        (param_id, param_ptr, String::from(#group))
-                    } else {
-                        (param_id, param_ptr, format!("{}/{}", #group, nested_group_name))
-                    }
-                }));
-            },
-            NestedParams::Inline { field, group: None } => quote! {
-                param_map.extend(self.#field.param_map());
-            },
-            NestedParams::Prefixed {
-                field,
-                id_prefix,
-                group: Some(group),
-            } => quote! {
-                param_map.extend(self.#field.param_map().into_iter().map(|(param_id, param_ptr, nested_group_name)| {
-                    let param_id = format!("{}_{}", #id_prefix, param_id);
-
-                    if nested_group_name.is_empty() {
-                        (param_id, param_ptr, String::from(#group))
-                    } else {
-                        (param_id, param_ptr, format!("{}/{}", #group, nested_group_name))
-                    }
-                }));
-            },
-            NestedParams::Prefixed {
-                field,
-                id_prefix,
-                group: None,
-            } => quote! {
-                param_map.extend(self.#field.param_map().into_iter().map(|(param_id, param_ptr, nested_group_name)| {
-                    let param_id = format!("{}_{}", #id_prefix, param_id);
-
-                    (param_id, param_ptr, nested_group_name)
-                }));
-            },
-            // We'll start at index 1 for display purposes. Both the group and the parameter ID get
-            // a suffix matching the array index.
-            NestedParams::Array { field, group: Some(group) } => quote! {
-                param_map.extend(self.#field.iter().enumerate().flat_map(|(idx, params)| {
-                    let idx = idx + 1;
-
-                    params.param_map().into_iter().map(move |(param_id, param_ptr, nested_group_name)| {
-                        let param_id = format!("{}_{}", param_id, idx);
-                        let group = format!("{} {}", #group, idx);
-
-                        // Note that this is different from the other variants
-                        if nested_group_name.is_empty() {
-                            (param_id, param_ptr, group)
-                        } else {
-                            (param_id, param_ptr, format!("{}/{}", group, nested_group_name))
-                        }
-                    })
-                }));
-            },
-            NestedParams::Array { field, group: None } => quote! {
-                param_map.extend(self.#field.iter().enumerate().flat_map(|(idx, params)| {
-                    let idx = idx + 1;
-
-                    params.param_map().into_iter().map(move |(param_id, param_ptr, nested_group_name)| {
-                        let param_id = format!("{}_{}", param_id, idx);
-
-                        (param_id, param_ptr, nested_group_name)
-                    })
-                }));
-            },
-        });
+        let param_mapping_tokens = params.iter().map(|p| p.param_map_tokens());
 
         quote! {
             // This may not be in scope otherwise, used to call .as_ptr()
             use ::nih_plug::params::Param;
 
             #[allow(unused_mut)]
-            let mut param_map = vec![#(#param_mapping_self_tokens),*];
-
-            #(#param_mapping_nested_tokens);*
+            let mut param_map = Vec::new();
+            #(param_map.extend(#param_mapping_tokens); )*
 
             param_map
         }
@@ -393,27 +313,69 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                 })
                 .unzip();
 
+        // ID prefixes are also added for nested objects
         let (serialize_fields_nested_tokens, deserialize_fields_nested_tokens): (Vec<_>, Vec<_>) =
-            nested_params
+            params
                 .iter()
+                .filter_map(|p| match p {
+                    Param::Single { .. } => None,
+                    Param::Nested(nested) => Some(nested),
+                })
                 .map(|nested| match nested {
-                    NestedParams::Inline { field, .. } | NestedParams::Prefixed { field, .. } => (
-                        // TODO: For some reason the macro won't parse correctly if you inline this
+                    NestedParams::Inline { field, .. } => (
+                        quote! { serialized.extend(self.#field.serialize_fields()); },
+                        quote! { self.#field.deserialize_fields(serialized); },
+                    ),
+                    NestedParams::Prefixed {
+                        field, id_prefix, ..
+                    } => (
                         quote! {
-                            let inlineme = self.#field.serialize_fields();
-                            serialized.extend(inlineme);
+                            let prefixed = self
+                                .#field
+                                .serialize_fields()
+                                .into_iter()
+                                .map(|(key, value)| (format!("{}_{}", #id_prefix, key), value));
+
+                            serialized.extend(prefixed);
                         },
-                        quote! { self.#field.deserialize_fields(serialized) },
+                        quote! {
+                            let prefix = format!("{}_", #id_prefix);
+                            let matching_fields = serialized
+                                .iter()
+                                .filter_map(|(key, value)| {
+                                    let original_key = key.strip_prefix(&prefix)?;
+                                    Some((original_key.to_owned(), value.to_owned()))
+                                })
+                                .collect();
+
+                            self.#field.deserialize_fields(&matching_fields);
+                        },
                     ),
                     NestedParams::Array { field, .. } => (
                         quote! {
-                            for field in self.#field.iter() {
-                                 serialized.extend(field.serialize_fields());
+                            for (field_idx, field) in self.#field.iter().enumerate() {
+                                let idx = field_idx + 1;
+                                let suffixed = field
+                                    .serialize_fields()
+                                    .into_iter()
+                                    .map(|(key, value)| (format!("{}_{}", key, idx), value));
+
+                                serialized.extend(suffixed);
                             }
                         },
                         quote! {
-                            for field in self.#field.iter() {
-                                field.deserialize_fields(serialized);
+                            for (field_idx, field) in self.#field.iter().enumerate() {
+                                let idx = field_idx + 1;
+                                let suffix = format!("_{}", idx);
+                                let matching_fields = serialized
+                                    .iter()
+                                    .filter_map(|(key, value)| {
+                                        let original_key = key.strip_suffix(&suffix)?;
+                                        Some((original_key.to_owned(), value.to_owned()))
+                                    })
+                                    .collect();
+
+                                field.deserialize_fields(&matching_fields);
                             }
                         },
                     ),
@@ -466,13 +428,33 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
     .into()
 }
 
-/// A parameter that should be added to the parameter map.
+/// A parameter defined on this struct using the `#[id = "..."]` attribute, or another object that
+/// also implements `Params` tagged with one of the variations on the `#[nested]` attribute.
 #[derive(Debug)]
-struct Param {
-    /// The name of the parameter's field on the struct.
-    field: syn::Ident,
-    /// The parameter's unique ID.
-    id: syn::LitStr,
+enum Param {
+    /// A parameter that should be added to the parameter map.
+    Single {
+        /// The name of the parameter's field on the struct.
+        field: syn::Ident,
+        /// The parameter's unique ID.
+        id: syn::LitStr,
+    },
+    /// Another struct also implementing `Params`. This object's parameters are inlined in the
+    /// parameter list.
+    Nested(NestedParams),
+}
+
+impl Param {
+    /// Generate the tokens needed for a field (or nested parameter struct) to add itself to the
+    /// parameter map.
+    fn param_map_tokens(&self) -> proc_macro2::TokenStream {
+        match self {
+            Param::Single { field, id } => {
+                quote! { [(String::from(#id), self.#field.as_ptr(), String::new())] }
+            }
+            Param::Nested(params) => params.param_map_tokens(),
+        }
+    }
 }
 
 /// A field containing data that must be stored in the plugin's state.
@@ -507,4 +489,95 @@ enum NestedParams {
         field: syn::Ident,
         group: Option<syn::LitStr>,
     },
+}
+
+impl NestedParams {
+    /// Constrruct an iterator that iterates over all parmaeters of a nested parameter object. This
+    /// takes ID prefixes and suffixes into account, and prefixes the group to the parameter's
+    /// existing groups if the `group` attribute on the `#[nested]` macro was specified.
+    fn param_map_tokens(&self) -> proc_macro2::TokenStream {
+        // How nested parameters are handled depends on the `NestedParams` variant.
+        // These are pairs of `(parameter_id, param_ptr, param_group)`. The specific
+        // parameter types know how to convert themselves into the correct ParamPtr variant.
+        // Top-level parameters have no group, and we'll prefix the group name specified in
+        // the `#[nested(...)]` attribute to fields coming from nested groups.
+        match self {
+            // TODO: No idea how to splice this as an `Option<&str>`, so this involves some
+            //       copy-pasting
+            NestedParams::Inline {
+                field,
+                group: Some(group),
+            } => quote! {
+                self.#field.param_map().into_iter().map(|(param_id, param_ptr, nested_group_name)| {
+                    if nested_group_name.is_empty() {
+                        (param_id, param_ptr, String::from(#group))
+                    } else {
+                        (param_id, param_ptr, format!("{}/{}", #group, nested_group_name))
+                    }
+                })
+            },
+            NestedParams::Inline { field, group: None } => quote! {
+                self.#field.param_map();
+            },
+            NestedParams::Prefixed {
+                field,
+                id_prefix,
+                group: Some(group),
+            } => quote! {
+                self.#field.param_map().into_iter().map(|(param_id, param_ptr, nested_group_name)| {
+                    let param_id = format!("{}_{}", #id_prefix, param_id);
+
+                    if nested_group_name.is_empty() {
+                        (param_id, param_ptr, String::from(#group))
+                    } else {
+                        (param_id, param_ptr, format!("{}/{}", #group, nested_group_name))
+                    }
+                })
+            },
+            NestedParams::Prefixed {
+                field,
+                id_prefix,
+                group: None,
+            } => quote! {
+                self.#field.param_map().into_iter().map(|(param_id, param_ptr, nested_group_name)| {
+                    let param_id = format!("{}_{}", #id_prefix, param_id);
+
+                    (param_id, param_ptr, nested_group_name)
+                })
+            },
+            // We'll start at index 1 for display purposes. Both the group and the parameter ID get
+            // a suffix matching the array index.
+            NestedParams::Array {
+                field,
+                group: Some(group),
+            } => quote! {
+                self.#field.iter().enumerate().flat_map(|(idx, params)| {
+                    let idx = idx + 1;
+
+                    params.param_map().into_iter().map(move |(param_id, param_ptr, nested_group_name)| {
+                        let param_id = format!("{}_{}", param_id, idx);
+                        let group = format!("{} {}", #group, idx);
+
+                        // Note that this is different from the other variants
+                        if nested_group_name.is_empty() {
+                            (param_id, param_ptr, group)
+                        } else {
+                            (param_id, param_ptr, format!("{}/{}", group, nested_group_name))
+                        }
+                    })
+                })
+            },
+            NestedParams::Array { field, group: None } => quote! {
+                self.#field.iter().enumerate().flat_map(|(idx, params)| {
+                    let idx = idx + 1;
+
+                    params.param_map().into_iter().map(move |(param_id, param_ptr, nested_group_name)| {
+                        let param_id = format!("{}_{}", param_id, idx);
+
+                        (param_id, param_ptr, nested_group_name)
+                    })
+                })
+            },
+        }
+    }
 }

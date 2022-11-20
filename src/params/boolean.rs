@@ -77,12 +77,12 @@ impl Param for BoolParam {
     }
 
     #[inline]
-    fn plain_value(&self) -> Self::Plain {
+    fn modulated_plain_value(&self) -> Self::Plain {
         self.value.load(Ordering::Relaxed)
     }
 
     #[inline]
-    fn normalized_value(&self) -> f32 {
+    fn modulated_normalized_value(&self) -> f32 {
         self.normalized_value.load(Ordering::Relaxed)
     }
 
@@ -105,11 +105,11 @@ impl Param for BoolParam {
         Some(1)
     }
 
-    fn previous_step(&self, _from: Self::Plain) -> Self::Plain {
+    fn previous_step(&self, _from: Self::Plain, _finer: bool) -> Self::Plain {
         false
     }
 
-    fn next_step(&self, _from: Self::Plain) -> Self::Plain {
+    fn next_step(&self, _from: Self::Plain, _finer: bool) -> Self::Plain {
         true
     }
 
@@ -194,7 +194,7 @@ impl ParamMut for BoolParam {
             .store(modulation_offset, Ordering::Relaxed);
 
         // TODO: This renormalizes this value, which is not necessary
-        self.set_plain_value(self.plain_value());
+        self.set_plain_value(self.unmodulated_plain_value());
     }
 
     fn update_smoother(&self, _sample_rate: f32, _init: bool) {
@@ -228,7 +228,7 @@ impl BoolParam {
     /// calling `param.plain_value()`.
     #[inline]
     pub fn value(&self) -> bool {
-        self.plain_value()
+        self.modulated_plain_value()
     }
 
     /// Enable polyphonic modulation for this parameter. The ID is used to uniquely identify this

@@ -3,10 +3,9 @@
 // See the comment in the main `nih_plug` crate
 #![allow(clippy::type_complexity)]
 
-use baseview::{WindowHandle, WindowScalePolicy};
 use crossbeam::atomic::AtomicCell;
 use nih_plug::params::persist::PersistentField;
-use nih_plug::prelude::{Editor, GuiContext, ParentWindowHandle};
+use nih_plug::prelude::{Editor, GuiContext};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,6 +15,8 @@ use vizia::prelude::*;
 pub use vizia;
 
 pub mod assets;
+mod editor;
+pub mod vizia_assets;
 pub mod widgets;
 
 /// Create an [`Editor`] instance using a [`vizia`][::vizia] GUI. The [`ViziaState`] passed to this
@@ -29,15 +30,27 @@ pub mod widgets;
 /// restoring state as part of your plugin's preset handling. You should not interact with this
 /// directly to set parameters. Use the `ParamEvent`s instead.
 ///
+/// The `theming` argument controls what level of theming to apply. If you use
+/// [`ViziaTheming::Custom`], then you **need** to call
+/// [`nih_plug_vizia::assets::register_noto_sans_light()`][assets::register_noto_sans_light()] at
+/// the start of your app function. Vizia's included fonts are also not registered by default. If
+/// you use the Roboto font that normally comes with Vizia or any of its emoji or icon fonts, you
+/// also need to register those using the functions in
+/// [`nih_plug_vizia::vizia_assets`][crate::vizia_assets].
+///
 /// See [VIZIA](https://github.com/vizia/vizia)'s repository for examples on how to use this.
-pub fn create_vizia_editor<F>(vizia_state: Arc<ViziaState>, app: F) -> Option<Box<dyn Editor>>
+pub fn create_vizia_editor<F>(
+    vizia_state: Arc<ViziaState>,
+    theming: ViziaTheming,
+    app: F,
+) -> Option<Box<dyn Editor>>
 where
     F: Fn(&mut Context, Arc<dyn GuiContext>) + 'static + Send + Sync,
 {
-    Some(Box::new(ViziaEditor {
+    Some(Box::new(editor::ViziaEditor {
         vizia_state,
         app: Arc::new(app),
-        apply_theming: true,
+        theming,
 
         // TODO: We can't get the size of the window when baseview does its own scaling, so if the
         //       host does not set a scale factor on Windows or Linux we should just use a factor of
@@ -46,30 +59,26 @@ where
         scaling_factor: AtomicCell::new(None),
         #[cfg(not(target_os = "macos"))]
         scaling_factor: AtomicCell::new(Some(1.0)),
+
+        emit_parameters_changed_event: Arc::new(AtomicBool::new(false)),
     }))
 }
 
-/// The same as [`create_vizia_editor()`] but without changing VIZIA's default styling and font.
-/// This also won't register the styling for any of the widgets that come with `nih_plug_vizia`, or
-/// register the custom fonts. Event handlers for the [`ParamEvent`][widgets::ParamEvent]s are still
-/// set up when using this function instead of [`create_vizia_editor()`].
-pub fn create_vizia_editor_without_theme<F>(
-    vizia_state: Arc<ViziaState>,
-    app: F,
-) -> Option<Box<dyn Editor>>
-where
-    F: Fn(&mut Context, Arc<dyn GuiContext>) + 'static + Send + Sync,
-{
-    Some(Box::new(ViziaEditor {
-        vizia_state,
-        app: Arc::new(app),
-        apply_theming: false,
-
-        #[cfg(target_os = "macos")]
-        scaling_factor: AtomicCell::new(None),
-        #[cfg(not(target_os = "macos"))]
-        scaling_factor: AtomicCell::new(Some(1.0)),
-    }))
+/// Controls what level of theming to apply to the editor.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
+pub enum ViziaTheming {
+    /// Disable both `nih_plug_vizia`'s and vizia's built-in theming.
+    None,
+    /// Disable `nih_plug_vizia`'s custom theming. Vizia's included fonts are also not registered by
+    /// default. If you use the Roboto font that normally comes with Vizia or any of its emoji or
+    /// icon fonts, you need to register those using the functions in
+    /// [`nih_plug_vizia::vizia_assets`][crate::vizia_assets].
+    Builtin,
+    /// Apply `nih_plug_vizia`'s custom theming. This is the default. You **need** to call
+    /// [`nih_plug_vizia::assets::register_noto_sans_light()`][assets::register_noto_sans_light()]
+    /// at the start of your app function for the font to work correctly.
+    #[default]
+    Custom,
 }
 
 /// State for an `nih_plug_vizia` editor. The scale factor can be manipulated at runtime by changing
@@ -152,117 +161,5 @@ impl ViziaState {
     // Called `is_open()` instead of `open()` to avoid the ambiguity.
     pub fn is_open(&self) -> bool {
         self.open.load(Ordering::Acquire)
-    }
-}
-
-/// An [`Editor`] implementation that calls an vizia draw loop.
-struct ViziaEditor {
-    vizia_state: Arc<ViziaState>,
-    /// The user's app function.
-    app: Arc<dyn Fn(&mut Context, Arc<dyn GuiContext>) + 'static + Send + Sync>,
-    /// Whether to apply `nih_plug_vizia`'s default theme. If this is disabled, then only the event
-    /// handler for `ParamEvent`s is set up.
-    apply_theming: bool,
-
-    /// The scaling factor reported by the host, if any. On macOS this will never be set and we
-    /// should use the system scaling factor instead.
-    scaling_factor: AtomicCell<Option<f32>>,
-}
-
-impl Editor for ViziaEditor {
-    fn spawn(
-        &self,
-        parent: ParentWindowHandle,
-        context: Arc<dyn GuiContext>,
-    ) -> Box<dyn std::any::Any + Send> {
-        let app = self.app.clone();
-        let vizia_state = self.vizia_state.clone();
-        let apply_theming = self.apply_theming;
-
-        let (unscaled_width, unscaled_height) = vizia_state.inner_logical_size();
-        let system_scaling_factor = self.scaling_factor.load();
-        let user_scale_factor = vizia_state.user_scale_factor();
-
-        let window = Application::new(move |cx| {
-            // Set some default styles to match the iced integration
-            if apply_theming {
-                // NOTE: vizia's font rendering looks way too dark and thick. Going one font weight
-                //       lower seems to compensate for this.
-                assets::register_fonts(cx);
-                cx.set_default_font(assets::NOTO_SANS_LIGHT);
-                cx.add_theme(include_str!("../assets/theme.css"));
-
-                // There doesn't seem to be any way to bundle styles with a widget, so we'll always
-                // include the style sheet for our custom widgets at context creation
-                widgets::register_theme(cx);
-            }
-
-            // Any widget can change the parameters by emitting `ParamEvent` events. This model will
-            // handle them automatically.
-            widgets::ParamModel {
-                context: context.clone(),
-            }
-            .build(cx);
-
-            // And we'll link `WindowEvent::ResizeWindow` and `WindowEvent::SetScale` events to our
-            // `ViziaState`. We'll notify the host when any of these change.
-            widgets::WindowModel {
-                context: context.clone(),
-                vizia_state: vizia_state.clone(),
-            }
-            .build(cx);
-
-            app(cx, context.clone())
-        })
-        .with_scale_policy(
-            system_scaling_factor
-                .map(|factor| WindowScalePolicy::ScaleFactor(factor as f64))
-                .unwrap_or(WindowScalePolicy::SystemScaleFactor),
-        )
-        .inner_size((unscaled_width, unscaled_height))
-        .user_scale_factor(user_scale_factor)
-        .open_parented(&parent);
-
-        self.vizia_state.open.store(true, Ordering::Release);
-        Box::new(ViziaEditorHandle {
-            vizia_state: self.vizia_state.clone(),
-            window,
-        })
-    }
-
-    fn size(&self) -> (u32, u32) {
-        // This includes the user scale factor if set, but not any HiDPI scaling
-        self.vizia_state.scaled_logical_size()
-    }
-
-    fn set_scale_factor(&self, factor: f32) -> bool {
-        // We're making things a bit more complicated by having both a system scale factor, which is
-        // used for HiDPI and also known to the host, and a user scale factor that the user can use
-        // to arbitrarily resize the GUI
-        self.scaling_factor.store(Some(factor));
-        true
-    }
-
-    fn param_values_changed(&self) {
-        // TODO: Update the GUI when this happens, right now this happens automatically as a result
-        //       of of the reactivity
-    }
-}
-
-/// The window handle used for [`ViziaEditor`].
-struct ViziaEditorHandle {
-    vizia_state: Arc<ViziaState>,
-    window: WindowHandle,
-}
-
-/// The window handle enum stored within 'WindowHandle' contains raw pointers. Is there a way around
-/// having this requirement?
-unsafe impl Send for ViziaEditorHandle {}
-
-impl Drop for ViziaEditorHandle {
-    fn drop(&mut self) {
-        self.vizia_state.open.store(false, Ordering::Release);
-        // XXX: This should automatically happen when the handle gets dropped, but apparently not
-        self.window.close();
     }
 }

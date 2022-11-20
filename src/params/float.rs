@@ -102,12 +102,12 @@ impl Param for FloatParam {
     }
 
     #[inline]
-    fn plain_value(&self) -> Self::Plain {
+    fn modulated_plain_value(&self) -> Self::Plain {
         self.value.load(Ordering::Relaxed)
     }
 
     #[inline]
-    fn normalized_value(&self) -> f32 {
+    fn modulated_normalized_value(&self) -> f32 {
         self.normalized_value.load(Ordering::Relaxed)
     }
 
@@ -130,12 +130,12 @@ impl Param for FloatParam {
         None
     }
 
-    fn previous_step(&self, from: Self::Plain) -> Self::Plain {
-        self.range.previous_step(from, self.step_size)
+    fn previous_step(&self, from: Self::Plain, finer: bool) -> Self::Plain {
+        self.range.previous_step(from, self.step_size, finer)
     }
 
-    fn next_step(&self, from: Self::Plain) -> Self::Plain {
-        self.range.next_step(from, self.step_size)
+    fn next_step(&self, from: Self::Plain, finer: bool) -> Self::Plain {
+        self.range.next_step(from, self.step_size, finer)
     }
 
     fn normalized_value_to_string(&self, normalized: f32, include_unit: bool) -> String {
@@ -228,14 +228,15 @@ impl ParamMut for FloatParam {
             .store(modulation_offset, Ordering::Relaxed);
 
         // TODO: This renormalizes this value, which is not necessary
-        self.set_plain_value(self.plain_value());
+        self.set_plain_value(self.unmodulated_plain_value());
     }
 
     fn update_smoother(&self, sample_rate: f32, reset: bool) {
         if reset {
-            self.smoothed.reset(self.plain_value());
+            self.smoothed.reset(self.modulated_plain_value());
         } else {
-            self.smoothed.set_target(sample_rate, self.plain_value());
+            self.smoothed
+                .set_target(sample_rate, self.modulated_plain_value());
         }
     }
 }
@@ -270,7 +271,7 @@ impl FloatParam {
     /// calling `param.plain_value()`.
     #[inline]
     pub fn value(&self) -> f32 {
-        self.plain_value()
+        self.modulated_plain_value()
     }
 
     /// Enable polyphonic modulation for this parameter. The ID is used to uniquely identify this
@@ -396,7 +397,7 @@ fn decimals_from_step_size(step_size: f32) -> usize {
 
     let mut num_digits = 0;
     for decimals in 0..f32::DIGITS as i32 {
-        if step_size * 10.0f32.powi(decimals) as f32 >= 1.0 {
+        if step_size * 10.0f32.powi(decimals) >= 1.0 {
             num_digits = decimals;
             break;
         }

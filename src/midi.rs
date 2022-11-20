@@ -36,12 +36,12 @@ pub enum NoteEvent {
         /// A unique identifier for this note, if available. Using this to refer to a note is
         /// required when allowing overlapping voices for CLAP plugins.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number, from 0 to 127.
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
-        /// The note's velocity, from 0 to 1. Some plugin APIs may allow higher precision than the
-        /// 127 levels available in MIDI.
+        /// The note's velocity, in `[0, 1]`. Some plugin APIs may allow higher precision than the
+        /// 128 levels available in MIDI.
         velocity: f32,
     },
     /// A note off event, available on [`MidiConfig::Basic`] and up. Bitwig Studio does not provide
@@ -51,12 +51,12 @@ pub enum NoteEvent {
         /// A unique identifier for this note, if available. Using this to refer to a note is
         /// required when allowing overlapping voices for CLAP plugins.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number, from 0 to 127.
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
-        /// The note's velocity, from 0 to 1. Some plugin APIs may allow higher precision than the
-        /// 127 levels available in MIDI.
+        /// The note's velocity, in `[0, 1]`. Some plugin APIs may allow higher precision than the
+        /// 128 levels available in MIDI.
         velocity: f32,
     },
     /// A note choke event, available on [`MidiConfig::Basic`] and up. When the host sends this to
@@ -67,9 +67,9 @@ pub enum NoteEvent {
         /// A unique identifier for this note, if available. Using this to refer to a note is
         /// required when allowing overlapping voices for CLAP plugins.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number, from 0 to 127.
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
     },
 
@@ -81,9 +81,9 @@ pub enum NoteEvent {
         /// The voice's unique identifier. Setting this allows a single voice to be terminated if
         /// the plugin allows multiple overlapping voices for a single key.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16, and the note's MIDI key number, from 0 to 127.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
     },
     /// A polyphonic modulation event, available on [`MidiConfig::Basic`] and up. This will only be
@@ -164,11 +164,11 @@ pub enum NoteEvent {
         /// A unique identifier for this note, if available. Using this to refer to a note is
         /// required when allowing overlapping voices for CLAP plugins.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number, from 0 to 127.
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
-        /// The note's pressure, from 0 to 1.
+        /// The note's pressure, in `[0, 1]`.
         pressure: f32,
     },
     /// A volume expression event, available on [`MidiConfig::Basic`] and up. Not all hosts may
@@ -178,9 +178,9 @@ pub enum NoteEvent {
         /// A unique identifier for this note, if available. Using this to refer to a note is
         /// required when allowing overlapping voices for CLAP plugins.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number, from 0 to 127.
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
         /// The note's voltage gain ratio, where 1.0 is unity gain.
         gain: f32,
@@ -192,12 +192,12 @@ pub enum NoteEvent {
         /// A unique identifier for this note, if available. Using this to refer to a note is
         /// required when allowing overlapping voices for CLAP plugins.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number, from 0 to 127.
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
-        /// The note's panning from, from -1 to 1, with -1 being panned hard left, and 1 being
-        /// panned hard right.
+        /// The note's panning from, in `[-1, 1]`, with -1 being panned hard left, and 1
+        /// being panned hard right.
         pan: f32,
     },
     /// A tuning expression event, available on [`MidiConfig::Basic`] and up. Not all hosts may support
@@ -207,11 +207,11 @@ pub enum NoteEvent {
         /// A unique identifier for this note, if available. Using this to refer to a note is
         /// required when allowing overlapping voices for CLAP plugins.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number, from 0 to 127.
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
-        /// The note's tuning in semitones, from -120 to 120.
+        /// The note's tuning in semitones, in `[-128, 128]`.
         tuning: f32,
     },
     /// A vibrato expression event, available on [`MidiConfig::Basic`] and up. Not all hosts may support
@@ -221,11 +221,11 @@ pub enum NoteEvent {
         /// A unique identifier for this note, if available. Using this to refer to a note is
         /// required when allowing overlapping voices for CLAP plugins.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number, from 0 to 127.
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
-        /// The note's vibrato amount, from 0 to 1.
+        /// The note's vibrato amount, in `[0, 1]`.
         vibrato: f32,
     },
     /// A expression expression (yes, expression expression) event, available on
@@ -235,11 +235,11 @@ pub enum NoteEvent {
         /// A unique identifier for this note, if available. Using this to refer to a note is
         /// required when allowing overlapping voices for CLAP plugins.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number, from 0 to 127.
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
-        /// The note's expression amount, from 0 to 1.
+        /// The note's expression amount, in `[0, 1]`.
         expression: f32,
     },
     /// A brightness expression event, available on [`MidiConfig::Basic`] and up. Not all hosts may support
@@ -249,17 +249,17 @@ pub enum NoteEvent {
         /// A unique identifier for this note, if available. Using this to refer to a note is
         /// required when allowing overlapping voices for CLAP plugins.
         voice_id: Option<i32>,
-        /// The note's channel, from 0 to 16.
+        /// The note's channel, in `0..16`.
         channel: u8,
-        /// The note's MIDI key number, from 0 to 127.
+        /// The note's MIDI key number, in `0..128`.
         note: u8,
-        /// The note's brightness amount, from 0 to 1.
+        /// The note's brightness amount, in `[0, 1]`.
         brightness: f32,
     },
     /// A MIDI channel pressure event, available on [`MidiConfig::MidiCCs`] and up.
     MidiChannelPressure {
         timing: u32,
-        /// The affected channel, from 0 to 16.
+        /// The affected channel, in `0..16`.
         channel: u8,
         /// The pressure, normalized to `[0, 1]` to match the poly pressure event.
         pressure: f32,
@@ -267,7 +267,7 @@ pub enum NoteEvent {
     /// A MIDI pitch bend, available on [`MidiConfig::MidiCCs`] and up.
     MidiPitchBend {
         timing: u32,
-        /// The affected channel, from 0 to 16.
+        /// The affected channel, in `0..16`.
         channel: u8,
         /// The pressure, normalized to `[0, 1]`. `0.5` means no pitch bend.
         value: f32,
@@ -277,11 +277,11 @@ pub enum NoteEvent {
     /// # Note
     ///
     /// The wrapper does not perform any special handling for two message 14-bit CCs (where the CC
-    /// number is in the range `[0, 31]`, and the next CC is that number plus 32) or for four
-    /// message RPN messages. For now you will need to handle these CCs yourself.
+    /// number is in `0..32`, and the next CC is that number plus 32) or for four message RPN
+    /// messages. For now you will need to handle these CCs yourself.
     MidiCC {
         timing: u32,
-        /// The affected channel, from 0 to 16.
+        /// The affected channel, in `0..16`.
         channel: u8,
         /// The control change number. See [`control_change`] for a list of CC numbers.
         cc: u8,
@@ -292,9 +292,9 @@ pub enum NoteEvent {
     /// cannot receive these events.
     MidiProgramChange {
         timing: u32,
-        /// The affected channel, from 0 to 16.
+        /// The affected channel, in `0..16`.
         channel: u8,
-        /// The program number.
+        /// The program number, in `0..128`.
         program: u8,
     },
 }
@@ -353,6 +353,16 @@ impl NoteEvent {
         let event_type = midi_data[0] & midi::EVENT_TYPE_MASK;
         let channel = midi_data[0] & midi::MIDI_CHANNEL_MASK;
         match event_type {
+            // You thought this was a note on? Think again! This is a cleverly disguised note off
+            // event straight from the 80s when Baud rate was still a limiting factor!
+            midi::NOTE_ON if midi_data[2] == 0 => Ok(NoteEvent::NoteOff {
+                timing,
+                voice_id: None,
+                channel,
+                note: midi_data[1],
+                // Few things use release velocity. Just having this be zero here is fine, right?
+                velocity: 0.0,
+            }),
             midi::NOTE_ON => Ok(NoteEvent::NoteOn {
                 timing,
                 voice_id: None,

@@ -26,6 +26,40 @@ generic-ui .label {
   right: 0;
 }
 
+param-button {
+  height: 30px;
+  width: auto;
+  border-color: #0a0a0a;
+  border-width: 1px;
+  child-top: 1s;
+  child-right: 7px;
+  child-bottom: 1s;
+  child-left: 7px;
+  background-color: #80808000;
+  transition: background-color 0.1 0;
+}
+param-button:hover {
+  background-color: #80808020;
+  transition: background-color 0.1 0;
+}
+param-button:checked {
+  background-color: #808080;
+  transition: background-color 0.1 0;
+}
+
+param-button.bypass {
+  background-color: #ffcfcb00;
+  transition: background-color 0.1 0;
+}
+param-button.bypass:hover {
+  background-color: #ffcfcb20;
+  transition: background-color 0.1 0;
+}
+param-button.bypass:checked {
+  background-color: #ffcfcb;
+  transition: background-color 0.1 0;
+}
+
 param-slider {
   height: 30px;
   width: 180px;

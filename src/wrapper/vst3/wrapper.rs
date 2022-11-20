@@ -388,8 +388,23 @@ impl<P: Vst3Plugin> IComponent for Wrapper<P> {
                     param.update_smoother(buffer_config.sample_rate, true);
                 }
 
+                // HACK: This is needed because if you change the latency during
+                //       `IComponent::setActive(true)` then Ardour will reentrantly call
+                //       `IComponent::setActive(true)` again during the previous call. This use of `static`
+                //       is also fine here because the host may only call this from the main thread, so
+                //       multiple simultaneous calls of this function are not allowed.
+                let mut plugin = match self.inner.plugin.try_lock() {
+                    Some(plugin) => plugin,
+                    None => {
+                        nih_debug_assert_failure!(
+                            "The host tried to call IComponent::setActive(true) while it was \
+                             already calling IComponent::setActive(true), returning kResultOk"
+                        );
+                        return kResultOk;
+                    }
+                };
+
                 let bus_config = self.inner.current_bus_config.load();
-                let mut plugin = self.inner.plugin.lock();
                 if plugin.initialize(
                     &bus_config,
                     &buffer_config,
@@ -734,7 +749,7 @@ impl<P: Vst3Plugin> IEditController for Wrapper<P> {
 
     unsafe fn get_param_normalized(&self, id: u32) -> f64 {
         match self.inner.param_by_hash.get(&id) {
-            Some(param_ptr) => param_ptr.normalized_value() as f64,
+            Some(param_ptr) => param_ptr.modulated_normalized_value() as f64,
             _ => 0.5,
         }
     }
@@ -1001,7 +1016,23 @@ impl<P: Vst3Plugin> IAudioProcessor for Wrapper<P> {
         // This function is also used to reset buffers on the plugin, so we should do the same
         // thing. We don't call `reset()` in `setup_processing()` for that same reason.
         if state {
-            process_wrapper(|| self.inner.plugin.lock().reset());
+            // HACK: See the comment in `IComponent::setActive()`. This is needed to work around
+            //       Ardour bugs.
+            let mut plugin = match self.inner.plugin.try_lock() {
+                Some(plugin) => plugin,
+                None => {
+                    nih_debug_assert_failure!(
+                        "The host tried to call IAudioProcessor::setProcessing(true) during a \
+                         reentrent call to IComponent::setActive(true), returning kResultOk. If \
+                         this is Ardour then it will still call \
+                         IAudioProcessor::setProcessing(true) later and everything will be fine. \
+                         Hopefully."
+                    );
+                    return kResultOk;
+                }
+            };
+
+            process_wrapper(|| plugin.reset());
         }
 
         // We don't have any special handling for suspending and resuming plugins, yet
@@ -1530,7 +1561,9 @@ impl<P: Vst3Plugin> IAudioProcessor for Wrapper<P> {
                 }
 
                 let result = if buffer_is_valid {
-                    let mut plugin = self.inner.plugin.lock();
+                    // NOTE: `parking_lot`'s mutexes sometimes allocate because of their use of
+                    //       thread locals
+                    let mut plugin = permit_alloc(|| self.inner.plugin.lock());
                     // SAFETY: Shortening these borrows is safe as even if the plugin overwrites the
                     //         slices (which it cannot do without using unsafe code), then they
                     //         would still be reset on the next iteration

@@ -69,25 +69,31 @@ pub fn s2v_compression_ratio() -> Arc<dyn Fn(&str) -> Option<f32> + Send + Sync>
 
 /// Turn an `f32` value from voltage gain to decibels using the semantics described in
 /// [`util::gain_to_db()]. You should use either `" dB"` or `" dBFS"` for the parameter's unit.
+/// `0.0` will be formatted as `-inf`.
 pub fn v2s_f32_gain_to_db(digits: usize) -> Arc<dyn Fn(f32) -> String + Send + Sync> {
     Arc::new(move |value| {
-        // Never print -0.0 since that just looks weird and confusing
-        let value_db = util::gain_to_db(value);
-        let value_db = if value_db.abs() < 1e-6 { 0.0 } else { value_db };
+        if value < util::MINUS_INFINITY_GAIN {
+            String::from("-inf")
+        } else {
+            // Never print -0.0 since that just looks weird and confusing
+            let value_db = util::gain_to_db(value);
+            let value_db = if value_db.abs() < 1e-6 { 0.0 } else { value_db };
 
-        format!("{:.digits$}", value_db)
+            format!("{:.digits$}", value_db)
+        }
     })
 }
 
 /// Parse a decibel value to a linear voltage gain ratio. Handles the `dB` or `dBFS` units for you.
-/// Used in conjunction with [`v2s_f32_gain_to_db()`].
+/// Used in conjunction with [`v2s_f32_gain_to_db()`]. `-inf dB` will be parsed to 0.0.
 pub fn s2v_f32_gain_to_db() -> Arc<dyn Fn(&str) -> Option<f32> + Send + Sync> {
     Arc::new(|string| {
-        string
-            .trim_end_matches(&[' ', 'd', 'D', 'b', 'B', 'f', 'F', 's', 'S'])
-            .parse()
-            .ok()
-            .map(util::db_to_gain)
+        let string = string.trim_end_matches(&[' ', 'd', 'D', 'b', 'B', 'f', 'F', 's', 'S']);
+        if string.eq_ignore_ascii_case("-inf") {
+            Some(0.0)
+        } else {
+            string.parse().ok().map(util::db_to_gain)
+        }
     })
 }
 
@@ -129,22 +135,86 @@ pub fn v2s_f32_hz_then_khz(digits: usize) -> Arc<dyn Fn(f32) -> String + Send + 
     })
 }
 
+/// [`v2s_f32_hz_then_khz()`], but also includes the note name. Can be used with
+/// [`s2v_f32_hz_then_khz()`].
+pub fn v2s_f32_hz_then_khz_with_note_name(
+    digits: usize,
+    include_cents: bool,
+) -> Arc<dyn Fn(f32) -> String + Send + Sync> {
+    Arc::new(move |value| {
+        // This is the inverse of the formula in `f32_midi_note_to_freq`
+        let fractional_note = util::freq_to_midi_note(value);
+        let note = fractional_note.round();
+        let cents = ((fractional_note - note) * 100.0) as i32;
+
+        let note_name = util::NOTES[(note as i32).rem_euclid(12) as usize];
+        let octave = (note as i32 / 12) - 1;
+        let note_str = if cents == 0 || !include_cents {
+            format!("{note_name}{octave}")
+        } else {
+            format!("{note_name}{octave}, {cents:+} ct.")
+        };
+
+        if value < 1000.0 {
+            format!("{:.digits$} Hz, {}", value, note_str)
+        } else {
+            format!(
+                "{:.digits$} kHz, {}",
+                value / 1000.0,
+                note_str,
+                digits = digits.max(1)
+            )
+        }
+    })
+}
+
 /// Convert an input in the same format at that of [`v2s_f32_hz_then_khz()] to a Hertz value. This
-/// additionally also accepts note names in the same format as [`s2v_i32_note_formatter()`].
+/// additionally also accepts note names in the same format as [`s2v_i32_note_formatter()`], and
+/// optionally also with cents in the form of `D#5, -23 ct.`.
 pub fn s2v_f32_hz_then_khz() -> Arc<dyn Fn(&str) -> Option<f32> + Send + Sync> {
     // FIXME: This is a very crude way to reuse the note value formatter. There's no real runtime
     //        penalty for doing it this way, but it does look less pretty.
     let note_formatter = s2v_i32_note_formatter();
 
     Arc::new(move |string| {
+        let string = string.trim();
+
         // If the user inputs a note representation, then we'll use that
         if let Some(midi_note_number) = note_formatter(string) {
-            return Some(util::midi_note_to_freq(midi_note_number.clamp(0, 127) as u8) as f32);
+            return Some(util::f32_midi_note_to_freq(midi_note_number as f32));
         }
 
-        let string = string.trim();
+        // This can also contain semitones. If we cannot parse this as a note name, we'll try
+        // parsing it as a frequency instead. We'll also `XXX Hz, C3` where `XXX Hz` does not match
+        // C3 since the user may just edit that of the text input box while leaving the note name
+        // untouched.
+        let string = if let Some((midi_note_number_str, cents_str)) = string.split_once(',') {
+            // If it contains a comma we'll also try parsing cents
+            let cents_str = cents_str
+                .trim_start_matches([' ', '+'])
+                .trim_end_matches([' ', 'C', 'c', 'E', 'e', 'N', 'n', 'T', 't', 'S', 's', '.']);
+
+            if let (Some(midi_note_number), Ok(cents)) = (
+                note_formatter(midi_note_number_str),
+                cents_str.parse::<i32>(),
+            ) {
+                let plain_note_freq = util::f32_midi_note_to_freq(midi_note_number as f32);
+                let cents_multiplier = 2.0f32.powf(cents as f32 / 100.0 / 12.0);
+                return Some(plain_note_freq * cents_multiplier);
+            }
+
+            // NOTE: As mentioned above, if the input contained a `,` we'll try parsing the part
+            //       before the comma as a frequency string if we could not parse the right hand
+            //       side has a note string. This can happen if the user edits the output of
+            //       `v2s_f32_hz_then_khz_with_note_name()`.
+            midi_note_number_str
+        } else {
+            string
+        };
+
+        // Otherwise we'll accept values in either Hz (with or without unit) or kHz
         let cleaned_string = string
-            .trim_end_matches(&[' ', 'k', 'K', 'h', 'H', 'z', 'Z'])
+            .trim_end_matches([' ', 'k', 'K', 'h', 'H', 'z', 'Z'])
             .parse()
             .ok();
         match string.get(string.len().saturating_sub(3)..) {
@@ -171,7 +241,7 @@ pub fn s2v_i32_power_of_two() -> Arc<dyn Fn(&str) -> Option<i32> + Send + Sync> 
 /// C4 and 69 is A4 (nice).
 pub fn v2s_i32_note_formatter() -> Arc<dyn Fn(i32) -> String + Send + Sync> {
     Arc::new(move |value| {
-        let note_name = util::NOTES[value as usize % 12];
+        let note_name = util::NOTES[value.rem_euclid(12) as usize];
         let octave = (value / 12) - 1;
         format!("{note_name}{octave}")
     })
@@ -185,11 +255,19 @@ pub fn s2v_i32_note_formatter() -> Arc<dyn Fn(&str) -> Option<i32> + Send + Sync
             return None;
         }
 
-        // A valid trimmed string will either be be two characters (we already checked the length),
-        // or two characters separated by spaces
+        // A valid trimmed string will either be be at least two characters (we already checked the
+        // length) or at least three characters if the second character is a hash, and there may be
+        // spaces in between the note name and the octave number
         let (note_name, octave) = string
             .split_once(|c: char| c.is_whitespace())
-            .unwrap_or_else(|| (&string[..1], &string[1..]));
+            .unwrap_or_else(|| {
+                // Sharps need to be handled separately
+                if string.len() > 2 && &string[1..2] == "#" {
+                    (&string[..2], &string[2..])
+                } else {
+                    (&string[..1], &string[1..])
+                }
+            });
 
         let note_id = util::NOTES
             .iter()

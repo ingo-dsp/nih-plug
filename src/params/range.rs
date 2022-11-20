@@ -130,40 +130,57 @@ impl FloatRange {
         }
     }
 
-    /// The range's previous discrete step from a certain value with a certain step size. If the step
-    /// size is not set, then the normalized range is split into 100 segments instead.
-    pub fn previous_step(&self, from: f32, step_size: Option<f32>) -> f32 {
+    /// The range's previous discrete step from a certain value with a certain step size. If the
+    /// step size is not set, then the normalized range is split into 50 segments instead. If
+    /// `finer` is true, then this is upped to 200 segments.
+    pub fn previous_step(&self, from: f32, step_size: Option<f32>, finer: bool) -> f32 {
         // This one's slightly more involved than the integer version. We'll split the normalized
-        // range up into 100 segments, but if `self.step_size` is set then we'll use that. Ideally
-        // we might want to split the range up into at most 100 segments, falling back to the step
-        // size if the total number of steps would be smaller than that, but since ranges can be
-        // nonlinear that's a bit difficult to pull off.
-        // TODO: At some point, implement the above mentioned step size quantization
+        // range up into 50 segments, but if `self.step_size` would cause the range to be devided
+        // into less than 50 segments then we'll use that.
         match self {
             FloatRange::Linear { min, max }
             | FloatRange::Skewed { min, max, .. }
-            | FloatRange::SymmetricalSkewed { min, max, .. } => match step_size {
-                Some(step_size) => from - step_size,
-                None => self.unnormalize(self.normalize(from) - 0.01),
+            | FloatRange::SymmetricalSkewed { min, max, .. } => {
+                let normalized_naive_step_size = if finer { 0.005 } else { 0.02 };
+                let naive_step =
+                    self.unnormalize(self.normalize(from) - normalized_naive_step_size);
+
+                match step_size {
+                    // Use the naive step size if it is larger than the configured step size
+                    Some(step_size) if (naive_step - from).abs() > step_size => {
+                        self.snap_to_step(naive_step, step_size)
+                    }
+                    Some(step_size) => from - step_size,
+                    None => naive_step,
+                }
+                .clamp(*min, *max)
             }
-            .clamp(*min, *max),
-            FloatRange::Reversed(range) => range.next_step(from, step_size),
+            FloatRange::Reversed(range) => range.next_step(from, step_size, finer),
         }
     }
 
     /// The range's next discrete step from a certain value with a certain step size. If the step
     /// size is not set, then the normalized range is split into 100 segments instead.
-    pub fn next_step(&self, from: f32, step_size: Option<f32>) -> f32 {
+    pub fn next_step(&self, from: f32, step_size: Option<f32>, finer: bool) -> f32 {
         // See above
         match self {
             FloatRange::Linear { min, max }
             | FloatRange::Skewed { min, max, .. }
-            | FloatRange::SymmetricalSkewed { min, max, .. } => match step_size {
-                Some(step_size) => from + step_size,
-                None => self.unnormalize(self.normalize(from) + 0.01),
+            | FloatRange::SymmetricalSkewed { min, max, .. } => {
+                let normalized_naive_step_size = if finer { 0.005 } else { 0.02 };
+                let naive_step =
+                    self.unnormalize(self.normalize(from) + normalized_naive_step_size);
+
+                match step_size {
+                    Some(step_size) if (naive_step - from).abs() > step_size => {
+                        self.snap_to_step(naive_step, step_size)
+                    }
+                    Some(step_size) => from + step_size,
+                    None => naive_step,
+                }
+                .clamp(*min, *max)
             }
-            .clamp(*min, *max),
-            FloatRange::Reversed(range) => range.previous_step(from, step_size),
+            FloatRange::Reversed(range) => range.previous_step(from, step_size, finer),
         }
     }
 

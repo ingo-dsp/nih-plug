@@ -19,11 +19,12 @@
 #[cfg(not(feature = "simd"))]
 compile_error!("Compiling without SIMD support is currently not supported");
 
+use atomic_float::AtomicF32;
 use nih_plug::prelude::*;
 use nih_plug_vizia::ViziaState;
 use std::simd::f32x2;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::spectrum::{SpectrumInput, SpectrumOutput};
 
@@ -40,20 +41,37 @@ const MIN_AUTOMATION_STEP_SIZE: u32 = 1;
 /// expensive, so updating them in larger steps can be useful.
 const MAX_AUTOMATION_STEP_SIZE: u32 = 512;
 
+/// The maximum number of samples to iterate over at a time.
+const MAX_BLOCK_SIZE: usize = 64;
+
+/// The filter frequency parameter's range. Also used in the `SpectrumAnalyzer` widget.
+pub(crate) fn filter_frequency_range() -> FloatRange {
+    FloatRange::Skewed {
+        min: 5.0, // This must never reach 0
+        max: 20_000.0,
+        factor: FloatRange::skew_factor(-2.5),
+    }
+}
+
 // All features from the original Diopser have been implemented (and the spread control has been
 // improved). Other features I want to implement are:
 // - Briefly muting the output when changing the number of filters to get rid of the clicks
 // - A proper GUI
-struct Diopser {
+pub struct Diopser {
     params: Arc<DiopserParams>,
 
-    /// Needed for computing the filter coefficients.
-    sample_rate: f32,
+    /// Needed for computing the filter coefficients. Also used to update `bypass_smoother`, hence
+    /// why this needs to be an `Arc<AtomicF32>`.
+    sample_rate: Arc<AtomicF32>,
 
     /// All of the all-pass filters, with vectorized coefficients so they can be calculated for
     /// multiple channels at once. [`DiopserParams::num_stages`] controls how many filters are
     /// actually active.
     filters: [filter::Biquad<f32x2>; MAX_NUM_FILTERS],
+    /// When the bypass parameter is toggled, this smoother fades between 0.0 and 1.0. This lets us
+    /// crossfade the dry and the wet signal to avoid clicks. The smoothing target is set in a
+    /// callback handler on the bypass parameter.
+    bypass_smoother: Arc<Smoother<f32>>,
 
     /// If this is set at the start of the processing cycle, then the filter coefficients should be
     /// updated. For the regular filter parameters we can look at the smoothers, but this is needed
@@ -69,17 +87,25 @@ struct Diopser {
     /// When the GUI is open we compute the spectrum on the audio thread and send it to the GUI.
     spectrum_input: SpectrumInput,
     /// This can be cloned and moved into the editor.
-    spectrum_output: Arc<SpectrumOutput>,
+    spectrum_output: Arc<Mutex<SpectrumOutput>>,
 }
 
-// TODO: Some combinations of parameters can cause really loud resonance. We should limit the
-//       resonance and filter stages parameter ranges in the GUI until the user unlocks.
 #[derive(Params)]
 struct DiopserParams {
     /// The editor state, saved together with the parameter state so the custom scaling can be
     /// restored.
     #[persist = "editor-state"]
     editor_state: Arc<ViziaState>,
+    /// If this option is enabled, then the filter stages parameter is limited to `[0, 40]`. This is
+    /// editor-only state, and doesn't affect host automation.
+    #[persist = "safe-mode"]
+    safe_mode: Arc<AtomicBool>,
+
+    /// This plugin really doesn't need its own bypass parameter, but it's still useful to have a
+    /// dedicated one so it can be shown in the GUI. This is linked to the host's bypass if the host
+    /// supports it.
+    #[id = "bypass"]
+    bypass: BoolParam,
 
     /// The number of all-pass filters applied in series.
     #[id = "stages"]
@@ -117,32 +143,55 @@ struct DiopserParams {
 
 impl Default for Diopser {
     fn default() -> Self {
+        let sample_rate = Arc::new(AtomicF32::new(1.0));
         let should_update_filters = Arc::new(AtomicBool::new(false));
+        let bypass_smoother = Arc::new(Smoother::new(SmoothingStyle::Linear(10.0)));
 
         // We only do stereo right now so this is simple
         let (spectrum_input, spectrum_output) =
             SpectrumInput::new(Self::DEFAULT_OUTPUT_CHANNELS as usize);
 
         Self {
-            params: Arc::new(DiopserParams::new(should_update_filters.clone())),
+            params: Arc::new(DiopserParams::new(
+                sample_rate.clone(),
+                should_update_filters.clone(),
+                bypass_smoother.clone(),
+            )),
 
-            sample_rate: 1.0,
+            sample_rate,
 
             filters: [filter::Biquad::default(); MAX_NUM_FILTERS],
+            bypass_smoother,
 
             should_update_filters,
             next_filter_smoothing_in: 1,
 
             spectrum_input,
-            spectrum_output: Arc::new(spectrum_output),
+            spectrum_output: Arc::new(Mutex::new(spectrum_output)),
         }
     }
 }
 
 impl DiopserParams {
-    fn new(should_update_filters: Arc<AtomicBool>) -> Self {
+    fn new(
+        sample_rate: Arc<AtomicF32>,
+        should_update_filters: Arc<AtomicBool>,
+        bypass_smoother: Arc<Smoother<f32>>,
+    ) -> Self {
         Self {
             editor_state: editor::default_state(),
+            safe_mode: Arc::new(AtomicBool::new(true)),
+
+            bypass: BoolParam::new("Bypass", false)
+                .with_callback(Arc::new(move |value| {
+                    bypass_smoother.set_target(
+                        sample_rate.load(Ordering::Relaxed),
+                        if value { 1.0 } else { 0.0 },
+                    );
+                }))
+                .with_value_to_string(formatters::v2s_bool_bypass())
+                .with_string_to_value(formatters::s2v_bool_bypass())
+                .make_bypass(),
 
             filter_stages: IntParam::new(
                 "Filter Stages",
@@ -162,16 +211,14 @@ impl DiopserParams {
             filter_frequency: FloatParam::new(
                 "Filter Frequency",
                 200.0,
-                FloatRange::Skewed {
-                    min: 5.0, // This must never reach 0
-                    max: 20_000.0,
-                    factor: FloatRange::skew_factor(-2.5),
-                },
+                // This value is also used in the spectrum analyzer to match the spectrum analyzer
+                // with this parameter which is bound to the X-Y pad's X-axis
+                filter_frequency_range(),
             )
             // This needs quite a bit of smoothing to avoid artifacts
             .with_smoother(SmoothingStyle::Logarithmic(100.0))
             // This includes the unit
-            .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
+            .with_value_to_string(formatters::v2s_f32_hz_then_khz_with_note_name(0, true))
             .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
             filter_resonance: FloatParam::new(
                 "Filter Resonance",
@@ -187,7 +234,7 @@ impl DiopserParams {
             .with_smoother(SmoothingStyle::Logarithmic(100.0))
             .with_value_to_string(formatters::v2s_f32_rounded(2)),
             filter_spread_octaves: FloatParam::new(
-                "Filter Spread Octaves",
+                "Filter Spread",
                 0.0,
                 FloatRange::SymmetricalSkewed {
                     min: -5.0,
@@ -196,6 +243,7 @@ impl DiopserParams {
                     center: 0.0,
                 },
             )
+            .with_unit(" octaves")
             .with_step_size(0.01)
             .with_smoother(SmoothingStyle::Linear(100.0)),
             filter_spread_style: EnumParam::new("Filter Spread Style", SpreadStyle::Octaves)
@@ -242,10 +290,10 @@ enum SpreadStyle {
 impl Plugin for Diopser {
     const NAME: &'static str = "Diopser";
     const VENDOR: &'static str = "Robbert van der Helm";
-    const URL: &'static str = "https://github.com/robbert-vdh/nih-plug";
+    const URL: &'static str = env!("CARGO_PKG_HOMEPAGE");
     const EMAIL: &'static str = "mail@robbertvanderhelm.nl";
 
-    const VERSION: &'static str = "0.2.0";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     const DEFAULT_INPUT_CHANNELS: u32 = 2;
     const DEFAULT_OUTPUT_CHANNELS: u32 = 2;
@@ -259,7 +307,16 @@ impl Plugin for Diopser {
     }
 
     fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        editor::create(self.params.clone(), self.params.editor_state.clone())
+        editor::create(
+            editor::Data {
+                params: self.params.clone(),
+
+                sample_rate: self.sample_rate.clone(),
+                spectrum: self.spectrum_output.clone(),
+                safe_mode: self.params.safe_mode.clone(),
+            },
+            self.params.editor_state.clone(),
+        )
     }
 
     fn accepts_bus_config(&self, config: &BusConfig) -> bool {
@@ -273,7 +330,12 @@ impl Plugin for Diopser {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
-        self.sample_rate = buffer_config.sample_rate;
+        self.sample_rate
+            .store(buffer_config.sample_rate, Ordering::Relaxed);
+
+        // The spectrum is smoothed so it decays gradually
+        self.spectrum_input
+            .update_sample_rate(buffer_config.sample_rate);
 
         true
     }
@@ -281,6 +343,8 @@ impl Plugin for Diopser {
     fn reset(&mut self) {
         // Initialize and/or reset the filters on the next process call
         self.should_update_filters.store(true, Ordering::Release);
+        self.bypass_smoother
+            .reset(if self.params.bypass.value() { 1.0 } else { 0.0 });
     }
 
     fn process(
@@ -295,22 +359,62 @@ impl Plugin for Diopser {
         let smoothing_interval =
             unnormalize_automation_precision(self.params.automation_precision.value());
 
-        for mut channel_samples in buffer.iter_samples() {
-            self.maybe_update_filters(smoothing_interval);
+        // The bypass parameter controls a smoother so we can crossfade between the dry and the wet
+        // signals as needed
+        if !self.params.bypass.value() || self.bypass_smoother.is_smoothing() {
+            // We'll iterate in blocks to make the blending relatively cheap without having to
+            // duplicate code or add a bunch of per-sample conditionals
+            for (_, mut block) in buffer.iter_blocks(MAX_BLOCK_SIZE) {
+                // We'll blend this with the dry signal as needed
+                let mut dry = [f32x2::default(); MAX_BLOCK_SIZE];
+                let mut wet = [f32x2::default(); MAX_BLOCK_SIZE];
+                for (input_samples, (dry_samples, wet_samples)) in block
+                    .iter_samples()
+                    .zip(std::iter::zip(dry.iter_mut(), wet.iter_mut()))
+                {
+                    self.maybe_update_filters(smoothing_interval);
 
-            // We can compute the filters for both channels at once. The SIMD version thus now only
-            // supports steroo audio.
-            let mut samples = unsafe { channel_samples.to_simd_unchecked() };
+                    // We can compute the filters for both channels at once. The SIMD version thus now
+                    // only supports steroo audio.
+                    *dry_samples = unsafe { input_samples.to_simd_unchecked() };
+                    *wet_samples = *dry_samples;
 
-            for filter in self
-                .filters
-                .iter_mut()
-                .take(self.params.filter_stages.value() as usize)
-            {
-                samples = filter.process(samples);
+                    for filter in self
+                        .filters
+                        .iter_mut()
+                        .take(self.params.filter_stages.value() as usize)
+                    {
+                        *wet_samples = filter.process(*wet_samples);
+                    }
+                }
+
+                // If the bypass smoother is activated then the bypass switch has just been flipped to
+                // either the on or the off position
+                if self.bypass_smoother.is_smoothing() {
+                    for (mut channel_samples, (dry_samples, wet_samples)) in block
+                        .iter_samples()
+                        .zip(std::iter::zip(dry.iter_mut(), wet.iter_mut()))
+                    {
+                        // We'll do an equal-power fade
+                        let dry_t_squared = self.bypass_smoother.next();
+                        let dry_t = dry_t_squared.sqrt();
+                        let wet_t = (1.0 - dry_t_squared).sqrt();
+
+                        let dry_weighted = *dry_samples * f32x2::splat(dry_t);
+                        let wet_weighted = *wet_samples * f32x2::splat(wet_t);
+
+                        unsafe { channel_samples.from_simd_unchecked(dry_weighted + wet_weighted) };
+                    }
+                } else if self.params.bypass.value() {
+                    // If the bypass is enabled and we're no longer smoothing then the output should
+                    // just be the origianl dry signal
+                } else {
+                    // Otherwise the signal is 100% wet
+                    for (mut channel_samples, wet_samples) in block.iter_samples().zip(wet.iter()) {
+                        unsafe { channel_samples.from_simd_unchecked(*wet_samples) };
+                    }
+                }
             }
-
-            unsafe { channel_samples.from_simd_unchecked(samples) };
         }
 
         // Compute a spectrum for the GUI if needed
@@ -353,6 +457,7 @@ impl Diopser {
             return;
         }
 
+        let sample_rate = self.sample_rate.load(Ordering::Relaxed);
         let frequency = self
             .params
             .filter_frequency
@@ -380,7 +485,7 @@ impl Diopser {
 
         // TODO: This wrecks the DSP load at high smoothing accuracy, perhaps also use SIMD here
         const MIN_FREQUENCY: f32 = 5.0;
-        let max_frequency = self.sample_rate / 2.05;
+        let max_frequency = sample_rate / 2.05;
         for filter_idx in 0..self.params.filter_stages.value() as usize {
             // The index of the filter normalized to range [-1, 1]
             let filter_proportion =
@@ -395,7 +500,7 @@ impl Diopser {
             .clamp(MIN_FREQUENCY, max_frequency);
 
             self.filters[filter_idx].coefficients =
-                filter::BiquadCoefficients::allpass(self.sample_rate, filter_frequency, resonance);
+                filter::BiquadCoefficients::allpass(sample_rate, filter_frequency, resonance);
             if reset_filters {
                 self.filters[filter_idx].reset();
             }

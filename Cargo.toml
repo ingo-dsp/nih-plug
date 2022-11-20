@@ -30,6 +30,7 @@ members = [
   "plugins/examples/sine",
   "plugins/examples/stft",
 
+  "plugins/buffr_glitch",
   "plugins/crisp",
   "plugins/crossover",
   "plugins/diopser",
@@ -108,8 +109,9 @@ keyboard-types = { version = "0.6", default-features = false }
 # All the claps!
 clap = { version = "3.2", features = ["derive"], optional = true }
 cpal = { version = "0.14.1", optional = true }
-# The current upstream jack panics when it can't load the JACK library, which breaks the backend fallback
-jack = { git = "https://github.com/robbert-vdh/rust-jack.git", rev = "1b4055a7b9f6f6bab7646f3dc10cc9355791d706", optional = true }
+# Current upstream JACK always links to libjack, even when using the default
+# dynamic loading feature
+jack = { git = "https://github.com/robbert-vdh/rust-jack.git", tag = "tmp-handle-library-failure", optional = true }
 rtrb = { version = "0.2.2", optional = true }
 
 # Used for the `vst3` feature

@@ -17,13 +17,10 @@
 use nih_plug::prelude::Editor;
 use nih_plug_vizia::vizia::prelude::*;
 use nih_plug_vizia::widgets::*;
-use nih_plug_vizia::{assets, create_vizia_editor, ViziaState};
+use nih_plug_vizia::{assets, create_vizia_editor, ViziaState, ViziaTheming};
 use std::sync::Arc;
 
 use crate::SpectralCompressorParams;
-
-/// VIZIA uses points instead of pixels for text
-const POINT_SCALE: f32 = 0.75;
 
 #[derive(Lens)]
 struct Data {
@@ -41,7 +38,10 @@ pub(crate) fn create(
     params: Arc<SpectralCompressorParams>,
     editor_state: Arc<ViziaState>,
 ) -> Option<Box<dyn Editor>> {
-    create_vizia_editor(editor_state, move |cx, _| {
+    create_vizia_editor(editor_state, ViziaTheming::Custom, move |cx, _| {
+        assets::register_noto_sans_light(cx);
+        assets::register_noto_sans_thin(cx);
+
         Data {
             params: params.clone(),
         }
@@ -57,7 +57,7 @@ pub(crate) fn create(
         VStack::new(cx, |cx| {
             Label::new(cx, "Spectral Compressor")
                 .font(assets::NOTO_SANS_THIN)
-                .font_size(40.0 * POINT_SCALE)
+                .font_size(30.0)
                 .height(Pixels(50.0))
                 .child_top(Stretch(1.0))
                 .child_bottom(Pixels(0.0))
@@ -68,7 +68,7 @@ pub(crate) fn create(
                 VStack::new(cx, |cx| {
                     Label::new(cx, "Globals")
                         .font(assets::NOTO_SANS_THIN)
-                        .font_size(30.0 * POINT_SCALE)
+                        .font_size(23.0)
                         .left(Stretch(1.0))
                         .right(Pixels(10.0))
                         .bottom(Pixels(-10.0));
@@ -81,7 +81,7 @@ pub(crate) fn create(
                 VStack::new(cx, |cx| {
                     Label::new(cx, "Threshold")
                         .font(assets::NOTO_SANS_THIN)
-                        .font_size(30.0 * POINT_SCALE)
+                        .font_size(23.0)
                         .left(Stretch(1.0))
                         .right(Pixels(10.0))
                         .bottom(Pixels(-10.0));
@@ -94,7 +94,7 @@ pub(crate) fn create(
                          you use this in a project, make sure to bounce things to audio just in \
                          case they'll sound different later.",
                     )
-                    .font_size(15.0 * POINT_SCALE)
+                    .font_size(11.0)
                     .left(Pixels(15.0))
                     .right(Pixels(5.0))
                     .width(Stretch(1.0));
@@ -109,7 +109,7 @@ pub(crate) fn create(
                 VStack::new(cx, |cx| {
                     Label::new(cx, "Upwards")
                         .font(assets::NOTO_SANS_THIN)
-                        .font_size(30.0 * POINT_SCALE)
+                        .font_size(23.0)
                         .left(Stretch(1.0))
                         .right(Pixels(10.0))
                         .bottom(Pixels(-10.0));
@@ -144,7 +144,7 @@ pub(crate) fn create(
                 VStack::new(cx, |cx| {
                     Label::new(cx, "Downwards")
                         .font(assets::NOTO_SANS_THIN)
-                        .font_size(30.0 * POINT_SCALE)
+                        .font_size(23.0)
                         .left(Stretch(1.0))
                         .right(Pixels(10.0))
                         .bottom(Pixels(-10.0));

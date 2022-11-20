@@ -12,12 +12,15 @@ use vizia::prelude::*;
 use super::ViziaState;
 
 mod generic_ui;
+pub mod param_base;
+mod param_button;
 mod param_slider;
 mod peak_meter;
 mod resize_handle;
 pub mod util;
 
 pub use generic_ui::GenericUi;
+pub use param_button::{ParamButton, ParamButtonExt};
 pub use param_slider::{ParamSlider, ParamSliderExt, ParamSliderStyle};
 pub use peak_meter::PeakMeter;
 pub use resize_handle::ResizeHandle;
@@ -58,6 +61,9 @@ pub enum RawParamEvent {
     SetParameterNormalized(ParamPtr, f32),
     /// End an automation gesture for a parameter.
     EndSetParameter(ParamPtr),
+    /// Sent by the wrapper to indicate that one or more parameter values have changed. Useful when
+    /// using properties based on a parameter's value that are computed inside of an event handler.
+    ParametersChanged,
 }
 
 /// Handles parameter updates for VIZIA GUIs. Registered in
@@ -86,6 +92,8 @@ impl Model for ParamModel {
                 self.context.raw_set_parameter_normalized(p, v)
             },
             RawParamEvent::EndSetParameter(p) => unsafe { self.context.raw_end_set_parameter(p) },
+            // This can be used by widgets to be notified when parameter values have changed
+            RawParamEvent::ParametersChanged => (),
         });
     }
 }

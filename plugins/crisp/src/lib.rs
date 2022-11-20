@@ -25,8 +25,8 @@ mod pcg;
 
 /// The number of channels we support. Hardcoded to allow for easier SIMD-ifying in the future.
 const NUM_CHANNELS: u32 = 2;
-/// The number of channels to iterate over at a time.
-const BLOCK_SIZE: usize = 64;
+/// The number of samples to iterate over at a time.
+const MAX_BLOCK_SIZE: usize = 64;
 
 /// These seeds being fixed makes bouncing deterministic.
 const INITIAL_PRNG_SEED: Pcg32iState = Pcg32iState::new(69, 420);
@@ -297,10 +297,10 @@ impl Default for CrispParams {
 impl Plugin for Crisp {
     const NAME: &'static str = "Crisp";
     const VENDOR: &'static str = "Robbert van der Helm";
-    const URL: &'static str = "https://github.com/robbert-vdh/nih-plug";
+    const URL: &'static str = env!("CARGO_PKG_HOMEPAGE");
     const EMAIL: &'static str = "mail@robbertvanderhelm.nl";
 
-    const VERSION: &'static str = "0.1.0";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     const DEFAULT_INPUT_CHANNELS: u32 = NUM_CHANNELS;
     const DEFAULT_OUTPUT_CHANNELS: u32 = NUM_CHANNELS;
@@ -333,6 +333,11 @@ impl Plugin for Crisp {
         nih_debug_assert_eq!(bus_config.num_output_channels, NUM_CHANNELS);
         self.sample_rate = buffer_config.sample_rate;
 
+        // The filter coefficients need to be reinitialized when loading a patch
+        self.update_rm_input_lpf();
+        self.update_noise_hpf();
+        self.update_noise_lpf();
+
         true
     }
 
@@ -357,8 +362,8 @@ impl Plugin for Crisp {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        for (_, mut block) in buffer.iter_blocks(BLOCK_SIZE) {
-            let mut rm_outputs = [[0.0; NUM_CHANNELS as usize]; BLOCK_SIZE];
+        for (_, mut block) in buffer.iter_blocks(MAX_BLOCK_SIZE) {
+            let mut rm_outputs = [[0.0; NUM_CHANNELS as usize]; MAX_BLOCK_SIZE];
 
             // Reduce per-sample branching a bit by iterating over smaller blocks and only then
             // deciding what to do with the output. This version branches only once per sample (in

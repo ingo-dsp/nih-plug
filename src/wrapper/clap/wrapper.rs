@@ -97,11 +97,7 @@ use crate::wrapper::util::{hash_param_id, process_wrapper, strlcpy};
 /// more than this many parameters at a time will cause changes to get lost.
 const OUTPUT_EVENT_QUEUE_CAPACITY: usize = 2048;
 
-#[repr(C)]
 pub struct Wrapper<P: ClapPlugin> {
-    // Keep the vtable as the first field so we can do a simple pointer cast
-    pub clap_plugin: clap_plugin,
-
     /// A reference to this object, upgraded to an `Arc<Self>` for the GUI context.
     this: AtomicRefCell<Weak<Self>>,
 
@@ -178,10 +174,6 @@ pub struct Wrapper<P: ClapPlugin> {
     /// The receiver belonging to [`new_state_sender`][Self::new_state_sender].
     updated_state_receiver: channel::Receiver<PluginState>,
 
-    /// Needs to be boxed because the plugin object is supposed to contain a static reference to
-    /// this.
-    plugin_descriptor: Box<PluginDescriptor<P>>,
-
     // We'll query all of the host's extensions upfront
     host_callback: ClapPtr<clap_host>,
 
@@ -194,6 +186,13 @@ pub struct Wrapper<P: ClapPlugin> {
     ///
     /// TODO: Support surround setups once a plugin needs that
     supported_bus_configs: Vec<BusConfig>,
+
+    // The main `clap_plugin` vtable. A pointer to this `Wrapper<P>` instance is stored in the
+    // `plugin_data` field. This pointer is set after creating the `Arc<Wrapper<P>>`.
+    pub clap_plugin: AtomicRefCell<clap_plugin>,
+    /// Needs to be boxed because the plugin object is supposed to contain a static reference to
+    /// this.
+    _plugin_descriptor: Box<PluginDescriptor<P>>,
 
     clap_plugin_audio_ports: clap_plugin_audio_ports,
 
@@ -409,7 +408,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         // on `Self::updated_state_sender`
         let (updated_state_sender, updated_state_receiver) = channel::bounded(0);
 
-        let plugin_descriptor = Box::new(PluginDescriptor::default());
+        let plugin_descriptor: Box<PluginDescriptor<P>> = Box::default();
 
         // We're not allowed to query any extensions until the init function has been called, so we
         // need a bunch of AtomicRefCells instead
@@ -540,27 +539,6 @@ impl<P: ClapPlugin> Wrapper<P> {
         }
 
         let wrapper = Self {
-            clap_plugin: clap_plugin {
-                // This needs to live on the heap because the plugin object contains a direct
-                // reference to the manifest as a value. We could share this between instances of
-                // the plugin using an `Arc`, but this doesn't consume a lot of memory so it's not a
-                // huge deal.
-                desc: plugin_descriptor.clap_plugin_descriptor(),
-                // We already need to use pointer casts in the factory, so might as well continue
-                // doing that here
-                plugin_data: ptr::null_mut(),
-                init: Some(Self::init),
-                destroy: Some(Self::destroy),
-                activate: Some(Self::activate),
-                deactivate: Some(Self::deactivate),
-                start_processing: Some(Self::start_processing),
-                stop_processing: Some(Self::stop_processing),
-                reset: Some(Self::reset),
-                process: Some(Self::process),
-                get_extension: Some(Self::get_extension),
-                on_main_thread: Some(Self::on_main_thread),
-            },
-
             this: AtomicRefCell::new(Weak::new()),
 
             plugin: Mutex::new(plugin),
@@ -591,9 +569,28 @@ impl<P: ClapPlugin> Wrapper<P> {
             updated_state_sender,
             updated_state_receiver,
 
-            plugin_descriptor,
-
             host_callback,
+
+            clap_plugin: AtomicRefCell::new(clap_plugin {
+                // This needs to live on the heap because the plugin object contains a direct
+                // reference to the manifest as a value. We could share this between instances of
+                // the plugin using an `Arc`, but this doesn't consume a lot of memory so it's not a
+                // huge deal.
+                desc: plugin_descriptor.clap_plugin_descriptor(),
+                // This pointer will be set to point at our wrapper instance later
+                plugin_data: ptr::null_mut(),
+                init: Some(Self::init),
+                destroy: Some(Self::destroy),
+                activate: Some(Self::activate),
+                deactivate: Some(Self::deactivate),
+                start_processing: Some(Self::start_processing),
+                stop_processing: Some(Self::stop_processing),
+                reset: Some(Self::reset),
+                process: Some(Self::process),
+                get_extension: Some(Self::get_extension),
+                on_main_thread: Some(Self::on_main_thread),
+            }),
+            _plugin_descriptor: plugin_descriptor,
 
             clap_plugin_audio_ports_config: clap_plugin_audio_ports_config {
                 count: Some(Self::ext_audio_ports_config_count),
@@ -695,6 +692,10 @@ impl<P: ClapPlugin> Wrapper<P> {
         // when opening plugin editors
         let wrapper = Arc::new(wrapper);
         *wrapper.this.borrow_mut() = Arc::downgrade(&wrapper);
+
+        // The `clap_plugin::plugin_data` field needs to point to this wrapper so we can access it
+        // from the vtable functions
+        wrapper.clap_plugin.borrow_mut().plugin_data = Arc::as_ptr(&wrapper) as *mut _;
 
         // The editor also needs to be initialized later so the Async executor can work.
         *wrapper.editor.borrow_mut() = wrapper
@@ -1573,22 +1574,25 @@ impl<P: ClapPlugin> Wrapper<P> {
                 false
             }
             (CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI) => {
-                // TODO: We can also handle note on, note off, and polyphonic pressure events, but
-                //       the host should not be sending us those since we prefer CLAP-style events
-                //       on our note ports
-                if P::MIDI_INPUT >= MidiConfig::MidiCCs {
-                    let event = &*(event as *const clap_event_midi);
+                // In the Basic note port type, we'll still handle note on, note off, and polyphonic
+                // pressure events if the host sents us those. But we'll throw away any other MIDI
+                // messages to stay consistent with the VST3 wrapper.
+                let event = &*(event as *const clap_event_midi);
 
-                    match NoteEvent::from_midi(
-                        raw_event.time - current_sample_idx as u32,
-                        event.data,
-                    ) {
-                        Ok(note_event) => {
-                            input_events.push_back(note_event);
-                        }
-                        Err(n) => nih_debug_assert_failure!("Unhandled MIDI message type {}", n),
-                    };
-                }
+                match NoteEvent::from_midi(raw_event.time - current_sample_idx as u32, event.data) {
+                    Ok(
+                        note_event @ (NoteEvent::NoteOn { .. }
+                        | NoteEvent::NoteOff { .. }
+                        | NoteEvent::PolyPressure { .. }),
+                    ) if P::MIDI_INPUT >= MidiConfig::Basic => {
+                        input_events.push_back(note_event);
+                    }
+                    Ok(note_event) if P::MIDI_INPUT >= MidiConfig::MidiCCs => {
+                        input_events.push_back(note_event);
+                    }
+                    Ok(_) => (),
+                    Err(n) => nih_debug_assert_failure!("Unhandled MIDI message type {}", n),
+                };
 
                 false
             }
@@ -1714,8 +1718,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn init(plugin: *const clap_plugin) -> bool {
-        check_null_ptr!(false, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         // We weren't allowed to query these in the constructor, so we need to do it now instead.
         *wrapper.host_gui.borrow_mut() =
@@ -1737,7 +1741,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn destroy(plugin: *const clap_plugin) {
-        drop(Arc::from_raw(plugin as *mut Self));
+        assert!(!plugin.is_null() && !(*plugin).plugin_data.is_null());
+        drop(Arc::from_raw((*plugin).plugin_data as *mut Self));
     }
 
     unsafe extern "C" fn activate(
@@ -1746,8 +1751,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         min_frames_count: u32,
         max_frames_count: u32,
     ) -> bool {
-        check_null_ptr!(false, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let bus_config = wrapper.current_bus_config.load();
         let buffer_config = BufferConfig {
@@ -1833,8 +1838,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn deactivate(plugin: *const clap_plugin) {
-        check_null_ptr!((), plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!((), plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         wrapper.plugin.lock().deactivate();
     }
@@ -1842,8 +1847,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     unsafe extern "C" fn start_processing(plugin: *const clap_plugin) -> bool {
         // We just need to keep track of our processing state so we can request a flush when
         // updating parameters from the GUI while the processing loop isn't running
-        check_null_ptr!(false, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         // Always reset the processing status when the plugin gets activated or deactivated
         wrapper.last_process_status.store(ProcessStatus::Normal);
@@ -1857,15 +1862,15 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn stop_processing(plugin: *const clap_plugin) {
-        check_null_ptr!((), plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!((), plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         wrapper.is_processing.store(false, Ordering::SeqCst);
     }
 
     unsafe extern "C" fn reset(plugin: *const clap_plugin) {
-        check_null_ptr!((), plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!((), plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         process_wrapper(|| wrapper.plugin.lock().reset());
     }
@@ -1874,8 +1879,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         plugin: *const clap_plugin,
         process: *const clap_process,
     ) -> clap_process_status {
-        check_null_ptr!(CLAP_PROCESS_ERROR, plugin, process);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(CLAP_PROCESS_ERROR, plugin, (*plugin).plugin_data, process);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         // Panic on allocations if the `assert_process_allocs` feature has been enabled, and make
         // sure that FTZ is set up correctly
@@ -1961,8 +1966,8 @@ impl<P: ClapPlugin> Wrapper<P> {
                     // process all audio until the end of the buffer.
                     match split_result {
                         Some((next_param_change_sample_idx, next_param_change_event_idx)) => {
-                            block_end = next_param_change_sample_idx as usize;
-                            event_start_idx = next_param_change_event_idx as usize;
+                            block_end = next_param_change_sample_idx;
+                            event_start_idx = next_param_change_event_idx;
                         }
                         None => block_end = process.frames_count as usize,
                     }
@@ -2340,8 +2345,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         plugin: *const clap_plugin,
         id: *const c_char,
     ) -> *const c_void {
-        check_null_ptr!(ptr::null(), plugin, id);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(ptr::null(), plugin, (*plugin).plugin_data, id);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let id = CStr::from_ptr(id);
 
@@ -2375,8 +2380,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn on_main_thread(plugin: *const clap_plugin) {
-        check_null_ptr!((), plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!((), plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         // [Self::schedule_gui] posts a task to the queue and asks the host to call this function
         // on the main thread, so once that's done we can just handle all requests here
@@ -2386,8 +2391,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn ext_audio_ports_config_count(plugin: *const clap_plugin) -> u32 {
-        check_null_ptr!(0, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(0, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         wrapper.supported_bus_configs.len() as u32
     }
@@ -2397,8 +2402,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         index: u32,
         config: *mut clap_audio_ports_config,
     ) -> bool {
-        check_null_ptr!(false, plugin, config);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, config);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         match wrapper.supported_bus_configs.get(index as usize) {
             Some(bus_config) => {
@@ -2471,8 +2476,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         plugin: *const clap_plugin,
         config_id: clap_id,
     ) -> bool {
-        check_null_ptr!(false, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         // We use the vector indices for the config ID
         match wrapper.supported_bus_configs.get(config_id as usize) {
@@ -2493,8 +2498,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn ext_audio_ports_count(plugin: *const clap_plugin, is_input: bool) -> u32 {
-        check_null_ptr!(0, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(0, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let bus_config = wrapper.current_bus_config.load();
         if is_input {
@@ -2524,8 +2529,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         is_input: bool,
         info: *mut clap_audio_port_info,
     ) -> bool {
-        check_null_ptr!(false, plugin, info);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, info);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let num_input_ports = Self::ext_audio_ports_count(plugin, true);
         let num_output_ports = Self::ext_audio_ports_count(plugin, false);
@@ -2699,8 +2704,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         // In CLAP creating the editor window and embedding it in another window are separate, and
         // those things are one and the same in our framework. So we'll just pretend we did
         // something here.
-        check_null_ptr!(false, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let editor_handle = wrapper.editor_handle.lock();
         if editor_handle.is_none() {
@@ -2712,8 +2717,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn ext_gui_destroy(plugin: *const clap_plugin) {
-        check_null_ptr!((), plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!((), plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let mut editor_handle = wrapper.editor_handle.lock();
         if editor_handle.is_some() {
@@ -2724,8 +2729,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn ext_gui_set_scale(plugin: *const clap_plugin, scale: f64) -> bool {
-        check_null_ptr!(false, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         // On macOS scaling is done by the OS, and all window sizes are in logical pixels
         if cfg!(target_os = "macos") {
@@ -2755,8 +2760,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         width: *mut u32,
         height: *mut u32,
     ) -> bool {
-        check_null_ptr!(false, plugin, width, height);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, width, height);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         // For macOS the scaling factor is always 1
         let (unscaled_width, unscaled_height) =
@@ -2799,8 +2804,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     ) -> bool {
         // TODO: Implement Host->Plugin GUI resizing
         // TODO: The host will also call this if an asynchronous (on Linux) resize request fails
-        check_null_ptr!(false, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let (unscaled_width, unscaled_height) =
             wrapper.editor.borrow().as_ref().unwrap().lock().size();
@@ -2817,9 +2822,9 @@ impl<P: ClapPlugin> Wrapper<P> {
         plugin: *const clap_plugin,
         window: *const clap_window,
     ) -> bool {
-        check_null_ptr!(false, plugin, window);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, window);
         // For this function we need the underlying Arc so we can pass it to the editor
-        let wrapper = Arc::from_raw(plugin as *const Self);
+        let wrapper = Arc::from_raw((*plugin).plugin_data as *const Self);
 
         let window = &*window;
 
@@ -2891,8 +2896,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn ext_latency_get(plugin: *const clap_plugin) -> u32 {
-        check_null_ptr!(0, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(0, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         wrapper.current_latency.load(Ordering::SeqCst)
     }
@@ -2932,10 +2937,10 @@ impl<P: ClapPlugin> Wrapper<P> {
 
                 let info = &mut *info;
                 info.id = 0;
-                info.supported_dialects = CLAP_NOTE_DIALECT_CLAP;
-                if P::MIDI_OUTPUT >= MidiConfig::MidiCCs {
-                    info.supported_dialects |= CLAP_NOTE_DIALECT_MIDI;
-                }
+                // If `P::MIDI_OUTPUT < MidiConfig::MidiCCs` we'll throw away MIDI CCs, pitch bend
+                // messages, and other messages that are not basic note on, off and polyphonic
+                // pressure messages. This way the behavior is the same as the VST3 wrapper.
+                info.supported_dialects = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI;
                 info.preferred_dialect = CLAP_NOTE_DIALECT_CLAP;
                 strlcpy(&mut info.name, "Note Output");
 
@@ -2946,8 +2951,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn ext_params_count(plugin: *const clap_plugin) -> u32 {
-        check_null_ptr!(0, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(0, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         wrapper.param_hashes.len() as u32
     }
@@ -2957,8 +2962,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         param_index: u32,
         param_info: *mut clap_param_info,
     ) -> bool {
-        check_null_ptr!(false, plugin, param_info);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, param_info);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         if param_index > Self::ext_params_count(plugin) {
             return false;
@@ -3018,12 +3023,12 @@ impl<P: ClapPlugin> Wrapper<P> {
         param_id: clap_id,
         value: *mut f64,
     ) -> bool {
-        check_null_ptr!(false, plugin, value);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, value);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         match wrapper.param_by_hash.get(&param_id) {
             Some(param_ptr) => {
-                *value = param_ptr.normalized_value() as f64
+                *value = param_ptr.modulated_normalized_value() as f64
                     * param_ptr.step_count().unwrap_or(1) as f64;
 
                 true
@@ -3039,8 +3044,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         display: *mut c_char,
         size: u32,
     ) -> bool {
-        check_null_ptr!(false, plugin, display);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, display);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let dest = std::slice::from_raw_parts_mut(display, size as usize);
 
@@ -3067,8 +3072,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         display: *const c_char,
         value: *mut f64,
     ) -> bool {
-        check_null_ptr!(false, plugin, display, value);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, display, value);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let display = match CStr::from_ptr(display).to_str() {
             Ok(s) => s,
@@ -3094,8 +3099,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         in_: *const clap_input_events,
         out: *const clap_output_events,
     ) {
-        check_null_ptr!((), plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!((), plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         if !in_.is_null() {
             wrapper.handle_in_events(&*in_, 0);
@@ -3116,8 +3121,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         plugin: *const clap_plugin,
         mode: clap_plugin_render_mode,
     ) -> bool {
-        check_null_ptr!(false, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let mode = match mode {
             CLAP_RENDER_REALTIME => ProcessMode::Realtime,
@@ -3137,8 +3142,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         plugin: *const clap_plugin,
         stream: *const clap_ostream,
     ) -> bool {
-        check_null_ptr!(false, plugin, stream);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, stream);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         let serialized = state::serialize_json::<P>(
             wrapper.params.clone(),
@@ -3177,8 +3182,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         plugin: *const clap_plugin,
         stream: *const clap_istream,
     ) -> bool {
-        check_null_ptr!(false, plugin, stream);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, stream);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         // CLAP does not have a way to tell how much data there is left in a stream, so we've
         // prepended the size in front of our JSON state
@@ -3233,8 +3238,8 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn ext_tail_get(plugin: *const clap_plugin) -> u32 {
-        check_null_ptr!(0, plugin);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(0, plugin, (*plugin).plugin_data);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         match wrapper.last_process_status.load() {
             ProcessStatus::Tail(samples) => samples,
@@ -3247,8 +3252,8 @@ impl<P: ClapPlugin> Wrapper<P> {
         plugin: *const clap_plugin,
         info: *mut clap_voice_info,
     ) -> bool {
-        check_null_ptr!(false, plugin, info);
-        let wrapper = &*(plugin as *const Self);
+        check_null_ptr!(false, plugin, (*plugin).plugin_data, info);
+        let wrapper = &*((*plugin).plugin_data as *const Self);
 
         match P::CLAP_POLY_MODULATION_CONFIG {
             Some(config) => {

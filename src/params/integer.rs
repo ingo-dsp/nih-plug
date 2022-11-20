@@ -94,12 +94,12 @@ impl Param for IntParam {
     }
 
     #[inline]
-    fn plain_value(&self) -> Self::Plain {
+    fn modulated_plain_value(&self) -> Self::Plain {
         self.value.load(Ordering::Relaxed)
     }
 
     #[inline]
-    fn normalized_value(&self) -> f32 {
+    fn modulated_normalized_value(&self) -> f32 {
         self.normalized_value.load(Ordering::Relaxed)
     }
 
@@ -122,11 +122,11 @@ impl Param for IntParam {
         Some(self.range.step_count())
     }
 
-    fn previous_step(&self, from: Self::Plain) -> Self::Plain {
+    fn previous_step(&self, from: Self::Plain, _finer: bool) -> Self::Plain {
         self.range.previous_step(from)
     }
 
-    fn next_step(&self, from: Self::Plain) -> Self::Plain {
+    fn next_step(&self, from: Self::Plain, _finer: bool) -> Self::Plain {
         self.range.next_step(from)
     }
 
@@ -208,14 +208,15 @@ impl ParamMut for IntParam {
             .store(modulation_offset, Ordering::Relaxed);
 
         // TODO: This renormalizes this value, which is not necessary
-        self.set_plain_value(self.plain_value());
+        self.set_plain_value(self.unmodulated_plain_value());
     }
 
     fn update_smoother(&self, sample_rate: f32, reset: bool) {
         if reset {
-            self.smoothed.reset(self.plain_value());
+            self.smoothed.reset(self.modulated_plain_value());
         } else {
-            self.smoothed.set_target(sample_rate, self.plain_value());
+            self.smoothed
+                .set_target(sample_rate, self.modulated_plain_value());
         }
     }
 }
@@ -249,7 +250,7 @@ impl IntParam {
     /// calling `param.plain_value()`.
     #[inline]
     pub fn value(&self) -> i32 {
-        self.plain_value()
+        self.modulated_plain_value()
     }
 
     /// Enable polyphonic modulation for this parameter. The ID is used to uniquely identify this

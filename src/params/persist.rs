@@ -1,6 +1,8 @@
 //! Traits and helpers for persistent fields. See the [`Params`][super::Params] trait for more
 //! information.
 
+use std::sync::Arc;
+
 /// Re-export for use in the [`Params`][super::Params] proc-macro.
 pub use bincode::deserialize as deserialize_field;
 /// Re-export for use in the [`Params`][super::Params] proc-macro.
@@ -27,6 +29,41 @@ where
         F: Fn(&T) -> R;
 }
 
+/// Wrapper for implementing an `Arc<I>` wrapper for an `I: PersistentField<T>`. Having both options
+/// gives you more flexibility in data can be shared with an editor.
+macro_rules! impl_persistent_arc {
+    ($ty:ty, T) => {
+        impl<'a, T> PersistentField<'a, T> for Arc<$ty>
+        where
+            T: serde::Serialize + serde::Deserialize<'a> + Send + Sync,
+        {
+            fn set(&self, new_value: T) {
+                self.as_ref().set(new_value);
+            }
+            fn map<F, R>(&self, f: F) -> R
+            where
+                F: Fn(&T) -> R,
+            {
+                self.as_ref().map(f)
+            }
+        }
+    };
+
+    ($ty:ty, $inner_ty:ty) => {
+        impl<'a> PersistentField<'a, $inner_ty> for Arc<$ty> {
+            fn set(&self, new_value: $inner_ty) {
+                self.as_ref().set(new_value);
+            }
+            fn map<F, R>(&self, f: F) -> R
+            where
+                F: Fn(&$inner_ty) -> R,
+            {
+                self.as_ref().map(f)
+            }
+        }
+    };
+}
+
 impl<'a, T> PersistentField<'a, T> for std::sync::RwLock<T>
 where
     T: serde::Serialize + serde::Deserialize<'a> + Send + Sync,
@@ -41,6 +78,7 @@ where
         f(&self.read().expect("Poisoned RwLock on read"))
     }
 }
+impl_persistent_arc!(std::sync::RwLock<T>, T);
 
 impl<'a, T> PersistentField<'a, T> for parking_lot::RwLock<T>
 where
@@ -56,6 +94,7 @@ where
         f(&self.read())
     }
 }
+impl_persistent_arc!(parking_lot::RwLock<T>, T);
 
 impl<'a, T> PersistentField<'a, T> for std::sync::Mutex<T>
 where
@@ -71,6 +110,23 @@ where
         f(&self.lock().expect("Poisoned Mutex"))
     }
 }
+impl_persistent_arc!(std::sync::Mutex<T>, T);
+
+impl<'a, T> PersistentField<'a, T> for atomic_refcell::AtomicRefCell<T>
+where
+    T: serde::Serialize + serde::Deserialize<'a> + Send + Sync,
+{
+    fn set(&self, new_value: T) {
+        *self.borrow_mut() = new_value;
+    }
+    fn map<F, R>(&self, f: F) -> R
+    where
+        F: Fn(&T) -> R,
+    {
+        f(&self.borrow())
+    }
+}
+impl_persistent_arc!(atomic_refcell::AtomicRefCell<T>, T);
 
 macro_rules! impl_persistent_field_parking_lot_mutex {
     ($ty:ty) => {
@@ -88,26 +144,45 @@ macro_rules! impl_persistent_field_parking_lot_mutex {
                 f(&self.lock())
             }
         }
-    };
-}
 
-impl<'a, T> PersistentField<'a, T> for atomic_refcell::AtomicRefCell<T>
-where
-    T: serde::Serialize + serde::Deserialize<'a> + Send + Sync,
-{
-    fn set(&self, new_value: T) {
-        *self.borrow_mut() = new_value;
-    }
-    fn map<F, R>(&self, f: F) -> R
-    where
-        F: Fn(&T) -> R,
-    {
-        f(&self.borrow())
-    }
+        impl_persistent_arc!($ty, T);
+    };
 }
 
 impl_persistent_field_parking_lot_mutex!(parking_lot::Mutex<T>);
 impl_persistent_field_parking_lot_mutex!(parking_lot::FairMutex<T>);
+
+macro_rules! impl_persistent_atomic {
+    ($ty:ty, $inner_ty:ty) => {
+        impl PersistentField<'_, $inner_ty> for $ty {
+            fn set(&self, new_value: $inner_ty) {
+                self.store(new_value, std::sync::atomic::Ordering::SeqCst);
+            }
+            fn map<F, R>(&self, f: F) -> R
+            where
+                F: Fn(&$inner_ty) -> R,
+            {
+                f(&self.load(std::sync::atomic::Ordering::SeqCst))
+            }
+        }
+
+        impl_persistent_arc!($ty, $inner_ty);
+    };
+}
+
+impl_persistent_atomic!(std::sync::atomic::AtomicBool, bool);
+impl_persistent_atomic!(std::sync::atomic::AtomicI8, i8);
+impl_persistent_atomic!(std::sync::atomic::AtomicI16, i16);
+impl_persistent_atomic!(std::sync::atomic::AtomicI32, i32);
+impl_persistent_atomic!(std::sync::atomic::AtomicI64, i64);
+impl_persistent_atomic!(std::sync::atomic::AtomicIsize, isize);
+impl_persistent_atomic!(std::sync::atomic::AtomicU8, u8);
+impl_persistent_atomic!(std::sync::atomic::AtomicU16, u16);
+impl_persistent_atomic!(std::sync::atomic::AtomicU32, u32);
+impl_persistent_atomic!(std::sync::atomic::AtomicU64, u64);
+impl_persistent_atomic!(std::sync::atomic::AtomicUsize, usize);
+impl_persistent_atomic!(atomic_float::AtomicF32, f32);
+impl_persistent_atomic!(atomic_float::AtomicF64, f64);
 
 /// Can be used with the `#[serde(with = "nih_plug::params::internals::serialize_atomic_cell")]`
 /// attribute to serialize `AtomicCell<T>`s.

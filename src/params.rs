@@ -83,23 +83,24 @@ pub trait Param: Display {
     fn poly_modulation_id(&self) -> Option<u32>;
 
     /// Get the unnormalized value for this parameter.
-    fn plain_value(&self) -> Self::Plain;
+    fn modulated_plain_value(&self) -> Self::Plain;
 
     /// Get the normalized `[0, 1]` value for this parameter.
-    fn normalized_value(&self) -> f32;
+    fn modulated_normalized_value(&self) -> f32;
 
     /// Get the unnormalized value for this parameter before any (monophonic) modulation coming from
     /// the host has been applied. If the host is not currently modulating this parameter than this
-    /// will be the same as [`plain_value()`][Self::plain_value()]. This may be useful for
-    /// displaying modulation differently in plugin GUIs. Right now only CLAP plugins in Bitwig
-    /// Studio use modulation.
+    /// will be the same as [`modulated_plain_value()`][Self::modulated_plain_value()]. This may be
+    /// useful for displaying modulation differently in plugin GUIs. Right now only CLAP plugins in
+    /// Bitwig Studio use modulation.
     fn unmodulated_plain_value(&self) -> Self::Plain;
 
     /// Get the normalized `[0, 1]` value for this parameter before any (monophonic) modulation
     /// coming from the host has been applied. If the host is not currently modulating this
-    /// parameter than this will be the same as [`plain_value()`][Self::plain_value()]. This may be
-    /// useful for displaying modulation differently in plugin GUIs. Right now only CLAP plugins in
-    /// Bitwig Studio use modulation.
+    /// parameter than this will be the same as
+    /// [`modulated_normalized_value()`][Self::modulated_normalized_value()]. This may be useful for
+    /// displaying modulation differently in plugin GUIs. Right now only CLAP plugins in Bitwig
+    /// Studio use modulation.
     fn unmodulated_normalized_value(&self) -> f32;
 
     /// Get the unnormalized default value for this parameter.
@@ -119,24 +120,28 @@ pub trait Param: Display {
     /// `from` if the value is at the start of its range. This is mainly used for scroll wheel
     /// interaction in plugin GUIs. When the parameter is not discrete then a step should cover one
     /// hundredth of the normalized range instead.
-    fn previous_step(&self, from: Self::Plain) -> Self::Plain;
+    ///
+    /// If `finer` is true, then the step size should be decreased if the parameter is continuous.
+    fn previous_step(&self, from: Self::Plain, finer: bool) -> Self::Plain;
 
     /// Returns the next step from a specific value for this parameter. This can be the same as
     /// `from` if the value is at the end of its range. This is mainly used for scroll wheel
     /// interaction in plugin GUIs. When the parameter is not discrete then a step should cover one
     /// hundredth of the normalized range instead.
-    fn next_step(&self, from: Self::Plain) -> Self::Plain;
+    ///
+    /// If `finer` is true, then the step size should be decreased if the parameter is continuous.
+    fn next_step(&self, from: Self::Plain, finer: bool) -> Self::Plain;
 
     /// The same as [`previous_step()`][Self::previous_step()], but for normalized values. This is
     /// mostly useful for GUI widgets.
-    fn previous_normalized_step(&self, from: f32) -> f32 {
-        self.preview_normalized(self.previous_step(self.preview_plain(from)))
+    fn previous_normalized_step(&self, from: f32, finer: bool) -> f32 {
+        self.preview_normalized(self.previous_step(self.preview_plain(from), finer))
     }
 
     /// The same as [`next_step()`][Self::next_step()], but for normalized values. This is mostly
     /// useful for GUI widgets.
-    fn next_normalized_step(&self, from: f32) -> f32 {
-        self.preview_normalized(self.next_step(self.preview_plain(from)))
+    fn next_normalized_step(&self, from: f32, finer: bool) -> f32 {
+        self.preview_normalized(self.next_step(self.preview_plain(from), finer))
     }
 
     /// Get the string representation for a normalized value. Used as part of the wrappers. Most
@@ -225,10 +230,7 @@ pub(crate) trait ParamMut: Param {
 /// Finally, the `Params` object may include parameters from other objects. Setting a group name is
 /// optional, but some hosts can use this information to display the parameters in a tree structure.
 /// Parameter IDs and persisting keys still need to be **unique** when using nested parameter
-/// structs. This currently has the following caveats:
-///
-/// - Enforcing that parameter IDs and persist keys are unique does not work across nested structs.
-/// - Deserializing persisted fields will give false positives about fields not existing.
+/// structs.
 ///
 /// Take a look at the example gain example plugin to see how this is used.
 ///
@@ -237,10 +239,9 @@ pub(crate) trait ParamMut: Param {
 /// Adding this attribute to a `Params` sub-object works similarly to the regular `#[nested]`
 /// attribute, but it also adds an ID to all parameters from the nested object. If a parameter in
 /// the nested nested object normally has parameter ID `bar`, the parameter's ID will now be renamed
-/// to `foo_bar`. _This makes it possible to reuse same parameter struct with different names and
+/// to `foo_bar`. The same thing happens with persistent field keys to support multiple copies of
+/// the field. _This makes it possible to reuse the same parameter struct with different names and
 /// parameter indices._
-///
-/// This does **not** support persistent fields.
 ///
 /// ## `#[nested(array, group_name = "Foo")]`
 ///
@@ -248,9 +249,7 @@ pub(crate) trait ParamMut: Param {
 /// with an `id_name`, except that it will iterate over the array and create unique indices for all
 /// nested parameters. If the nested parameters object has a parameter called `bar`, then that
 /// parameter will belong to the group `Foo {array_index + 1}`, and it will have the renamed
-/// parameter ID `bar_{array_index + 1}`.
-///
-/// This does **not** support persistent fields.
+/// parameter ID `bar_{array_index + 1}`. The same thing applies to persistent field keys.
 ///
 /// # Safety
 ///
