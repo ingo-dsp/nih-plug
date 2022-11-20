@@ -130,12 +130,36 @@ impl Editor for ViziaEditor {
         self.emit_parameters_changed_event
             .store(true, Ordering::Relaxed);
     }
+
+    fn on_key_down(&self, _keyboard_event: &keyboard_types::KeyboardEvent) -> bool {
+        false // TODO
+    }
+
+    fn on_key_up(&self,  _keyboard_event: &keyboard_types::KeyboardEvent) -> bool {
+        false // TODO
+    }
 }
 
 /// The window handle used for [`ViziaEditor`].
 struct ViziaEditorHandle {
     vizia_state: Arc<ViziaState>,
     window: WindowHandle,
+}
+impl SpawnedWindow for ViziaEditorHandle {
+    fn resize(&self, logical_width: f32, logical_height: f32, scale_factor: f32) {
+
+        // store new size in egui_state
+        let unscaled_width = logical_width / scale_factor;
+        let unscaled_height = logical_height / scale_factor;
+        self.vizia_state.size.store((unscaled_width as u32, unscaled_height as u32));
+
+        // resize spawned window
+        let logical_size = baseview::Size {
+            width: logical_width as f64,
+            height: logical_height as f64,
+        };
+        self.window.resize(logical_size, scale_factor);
+    }
 }
 
 /// The window handle enum stored within 'WindowHandle' contains raw pointers. Is there a way around
