@@ -134,11 +134,11 @@ impl WindowHandler for WrapperWindowHandler {
         }
     }
 
-    fn on_event(&mut self, window: &mut Window, event: baseview::Event) -> EventStatus {
+    fn on_event(&mut self, _window: &mut Window, event: baseview::Event) -> EventStatus {
         if let baseview::Event::Window(baseview::WindowEvent::Resized(window_info)) = event {
             self.editor_handle.resize(
-                window_info.logical_size().width as f32,
-                window_info.logical_size().height as f32,
+                window_info.physical_size().width as f32,
+                window_info.physical_size().height as f32,
                 window_info.scale() as f32
             );
             return EventStatus::Captured
@@ -318,16 +318,6 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
         match self.editor.borrow().clone() {
             Some(editor) => {
                 let context = self.clone().make_gui_context(gui_task_sender);
-
-                // DPI scaling should not be used on macOS since the OS handles it there
-                #[cfg(target_os = "macos")]
-                let scaling_policy = baseview::WindowScalePolicy::SystemScaleFactor;
-                #[cfg(not(target_os = "macos"))]
-                let scaling_policy = {
-                    editor.lock().set_scale_factor(self.config.dpi_scale);
-                    baseview::WindowScalePolicy::ScaleFactor(self.config.dpi_scale as f64)
-                };
-
                 let (width, height) = editor.lock().size();
                 Window::open_blocking(
                     WindowOpenOptions {
@@ -336,7 +326,6 @@ impl<P: Plugin, B: Backend> Wrapper<P, B> {
                             width: width as f64,
                             height: height as f64,
                         },
-                        scale: scaling_policy,
                         gl_config: None,
                     },
                     move |window| {

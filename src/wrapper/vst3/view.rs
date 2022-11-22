@@ -470,25 +470,9 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
 
 impl<P: Vst3Plugin> IPlugViewContentScaleSupport for WrapperView<P> {
     unsafe fn set_scale_factor(&self, factor: f32) -> tresult {
-        // TODO: So apparently Ableton Live doesn't call this function. Right now we'll hardcode the
-        //       default scale to 1.0 on Linux and Windows since we can't easily get the scale from
-        //       baseview. A better alternative would be to do the fallback DPI scale detection
-        //       within NIH-plug itself. Then we can still only use baseview's system scale policy
-        //       on macOS and both the editor implementation and the wrappers would know about the
-        //       correct scale.
-
-        // On macOS scaling is done by the OS, and all window sizes are in logical pixels
-        if cfg!(target_os = "macos") {
-            nih_debug_assert_failure!("Ignoring host request to set explicit DPI scaling factor");
-            return kResultFalse;
-        }
-
-        if self.editor.lock().set_scale_factor(factor) {
-            self.scaling_factor.store(factor, Ordering::Relaxed);
-            kResultOk
-        } else {
-            kResultFalse
-        }
+        // TODO: We differ from nih_plug here in that we never use the hosts scaling factor but always ask the system.
+        nih_debug_assert_failure!("Ignoring host request to set explicit DPI scaling factor");
+        return kResultFalse;
     }
 }
 

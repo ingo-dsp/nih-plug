@@ -51,7 +51,7 @@ pub trait Editor: Send {
     ///
     /// Right now this is never called on macOS since DPI scaling is built into the operating system
     /// there.
-    fn set_scale_factor(&self, factor: f32) -> bool;
+    // fn set_scale_factor(&self, factor: f32) -> bool;
 
     /// A callback that will be called whenever the parameter values changed while the editor is
     /// open. You don't need to do anything with this, but this can be used to force a redraw when

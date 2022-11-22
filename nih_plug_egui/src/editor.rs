@@ -1,7 +1,7 @@
 //! An [`Editor`] implementation for egui.
 
 use baseview::gl::GlConfig;
-use baseview::{Size, WindowHandle, WindowOpenOptions, WindowScalePolicy};
+use baseview::{Size, WindowHandle, WindowOpenOptions};
 use crossbeam::atomic::AtomicCell;
 use egui::Context;
 use egui_baseview::{EguiWindow, translate_virtual_key_code};
@@ -30,7 +30,7 @@ pub(crate) struct EguiEditor<T> {
 
     /// The scaling factor reported by the host, if any. On macOS this will never be set and we
     /// should use the system scaling factor instead.
-    pub(crate) scaling_factor: AtomicCell<Option<f32>>,
+    //pub(crate) scaling_factor: AtomicCell<Option<f32>>,
 
     pub(crate) plugin_keyboard_events: Arc<Mutex<Vec<EguiKeyboardInput>>>,
 
@@ -45,25 +45,18 @@ where
         &self,
         parent: ParentWindowHandle,
         context: Arc<dyn GuiContext>,
-        request_keyboard_focus: bool
+        _request_keyboard_focus: bool
     ) -> Box<dyn SpawnedWindow + Send> {
         let build = self.build.clone();
         let update = self.update.clone();
         let state = self.user_state.clone();
 
-        let (unscaled_width, unscaled_height) = self.egui_state.size();
-        let scaling_factor = self.scaling_factor.load();
+        let (physical_width, physical_height) = self.egui_state.size();
         let window = EguiWindow::open_parented(
             &parent,
             WindowOpenOptions {
                 title: String::from("egui window"),
-                // Baseview should be doing the DPI scaling for us
-                size: Size::new(unscaled_width as f64, unscaled_height as f64),
-                // NOTE: For some reason passing 1.0 here causes the UI to be scaled on macOS but
-                //       not the mouse events.
-                scale: scaling_factor
-                    .map(|factor| WindowScalePolicy::ScaleFactor(factor as f64))
-                    .unwrap_or(WindowScalePolicy::SystemScaleFactor),
+                size: Size::new(physical_width as f64, physical_height as f64),
 
                 #[cfg(feature = "opengl")]
                 gl_config: Some(GlConfig {
@@ -104,11 +97,6 @@ where
 
     fn size(&self) -> (u32, u32) {
         self.egui_state.size()
-    }
-
-    fn set_scale_factor(&self, factor: f32) -> bool {
-        self.scaling_factor.store(Some(factor));
-        true
     }
 
     fn param_values_changed(&self) {
@@ -168,19 +156,19 @@ struct EguiEditorHandle {
 }
 
 impl SpawnedWindow for EguiEditorHandle {
-    fn resize(&self, logical_width: f32, logical_height: f32, _ignored_host_reported_scale_factor: f32) {
+    fn resize(&self, physical_width: f32, physical_height: f32, _ignored_host_reported_scale_factor: f32) {
 
         // TODO: Should we somehow honor the host-reported-scale-factor?
 
         // store new size in egui_state
-        self.egui_state.size.store((logical_width as u32, logical_height as u32));
+        self.egui_state.size.store((physical_width as u32, physical_height as u32));
 
         // resize spawned window
-        let logical_size = baseview::Size {
-            width: logical_width as f64,
-            height: logical_height as f64,
+        let physical_size = baseview::Size {
+            width: physical_width as f64,
+            height: physical_height as f64,
         };
-        self.window.resize(logical_size);
+        self.window.resize(physical_size);
     }
 }
 /// The window handle enum stored within 'WindowHandle' contains raw pointers. Is there a way around

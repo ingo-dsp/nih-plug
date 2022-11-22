@@ -2732,27 +2732,9 @@ impl<P: ClapPlugin> Wrapper<P> {
         check_null_ptr!(false, plugin, (*plugin).plugin_data);
         let wrapper = &*((*plugin).plugin_data as *const Self);
 
-        // On macOS scaling is done by the OS, and all window sizes are in logical pixels
-        if cfg!(target_os = "macos") {
-            nih_debug_assert_failure!("Ignoring host request to set explicit DPI scaling factor");
-            return false;
-        }
-
-        if wrapper
-            .editor
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .lock()
-            .set_scale_factor(scale as f32)
-        {
-            wrapper
-                .editor_scaling_factor
-                .store(scale as f32, std::sync::atomic::Ordering::Relaxed);
-            true
-        } else {
-            false
-        }
+        // TODO: We differ from official nih_plug by not doing anything here.
+        nih_debug_assert_failure!("Ignoring host request to set explicit DPI scaling factor");
+        return false;
     }
 
     unsafe extern "C" fn ext_gui_get_size(

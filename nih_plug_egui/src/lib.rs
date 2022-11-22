@@ -9,7 +9,7 @@ use std::borrow::{Borrow, BorrowMut};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use baseview::gl::GlConfig;
-use baseview::{Size, WindowHandle, WindowOpenOptions, WindowScalePolicy};
+use baseview::{Size, WindowHandle, WindowOpenOptions};
 use crossbeam::atomic::AtomicCell;
 use egui::{ClipboardData, ClipboardMime, Context, Event, Key, Modifiers, RawInput, Vec2};
 use egui_baseview::{EguiWindow, is_copy_command, is_cut_command, is_paste_command, translate_virtual_key_code};
@@ -59,14 +59,6 @@ where
         user_state: Arc::new(RwLock::new(user_state)),
         build: Arc::new(build),
         update: Arc::new(update),
-
-        // TODO: We can't get the size of the window when baseview does its own scaling, so if the
-        //       host does not set a scale factor on Windows or Linux we should just use a factor of
-        //       1. That may make the GUI tiny but it also prevents it from getting cut off.
-        #[cfg(target_os = "macos")]
-        scaling_factor: AtomicCell::new(None),
-        #[cfg(not(target_os = "macos"))]
-        scaling_factor: AtomicCell::new(Some(1.0)),
         plugin_keyboard_events: Arc::new(Mutex::new(vec![])),
 
         clipboard_ctx: Arc::new(Mutex::new(match copypasta::ClipboardContext::new() {
