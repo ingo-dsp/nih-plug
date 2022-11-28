@@ -2728,7 +2728,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         }
     }
 
-    unsafe extern "C" fn ext_gui_set_scale(plugin: *const clap_plugin, scale: f64) -> bool {
+    unsafe extern "C" fn ext_gui_set_scale(plugin: *const clap_plugin, _scale: f64) -> bool {
         check_null_ptr!(false, plugin, (*plugin).plugin_data);
         let wrapper = &*((*plugin).plugin_data as *const Self);
 

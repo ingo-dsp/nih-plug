@@ -421,7 +421,7 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
         kResultOk
     }
 
-    unsafe fn on_focus(&self, state: TBool) -> tresult {
+    unsafe fn on_focus(&self, _state: TBool) -> tresult {
         return kResultOk;
     }
 
@@ -469,7 +469,7 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
 }
 
 impl<P: Vst3Plugin> IPlugViewContentScaleSupport for WrapperView<P> {
-    unsafe fn set_scale_factor(&self, factor: f32) -> tresult {
+    unsafe fn set_scale_factor(&self, _factor: f32) -> tresult {
         // TODO: We differ from nih_plug here in that we never use the hosts scaling factor but always ask the system.
         nih_debug_assert_failure!("Ignoring host request to set explicit DPI scaling factor");
         return kResultFalse;
