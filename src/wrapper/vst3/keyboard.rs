@@ -5,7 +5,9 @@ pub fn create_vst_keyboard_event(key_char: vst3_sys::base::char16, virtual_key_c
 
     let key_code = VstKeyCode::try_from(virtual_key_code).ok();
 
-    let virtual_keycode_to_char = if key_char != 0 {
+    let virtual_keycode_to_char = if key_char >= 32 { 
+        // 0-31 are control characters, but Ableton Live on Windows reports key_char == 3 for Ctrl+C.
+        // So we just don't accept any control characters here.
         convert_char16(key_char)
     } else {
         if virtual_key_code >= VKEY_FIRST_ASCII {
