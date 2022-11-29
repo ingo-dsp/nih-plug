@@ -2,7 +2,7 @@
 
 use baseview::gl::GlConfig;
 use baseview::{Size, WindowHandle, WindowOpenOptions};
-use crossbeam::atomic::AtomicCell;
+use std::ops::DerefMut;
 use egui::Context;
 use egui_baseview::{EguiWindow, translate_virtual_key_code};
 use egui_baseview::window::{EguiKeyboardInput, translate_modifiers};
@@ -50,6 +50,7 @@ where
         let build = self.build.clone();
         let update = self.update.clone();
         let state = self.user_state.clone();
+        let plugin_keyboard_events = self.plugin_keyboard_events.clone();
 
         let (physical_width, physical_height) = self.egui_state.size();
         let window = EguiWindow::open_parented(
@@ -77,6 +78,15 @@ where
             state,
             move |egui_ctx, _queue, state| build(egui_ctx, &mut state.write()),
             move |egui_ctx, _queue, state| {
+                if let Ok(mut plugin_keyboard_events) = plugin_keyboard_events.try_lock() {
+                    let mut events = vec![];
+                    std::mem::swap(&mut *plugin_keyboard_events, &mut events);
+                    for event in events.into_iter() {
+                        let mut input_mut = egui_ctx.input_mut();
+                        event.apply_on_input(input_mut.deref_mut());
+                    }
+                }
+
                 let setter = ParamSetter::new(context.as_ref());
 
                 // For now, just always redraw. Most plugin GUIs have meters, and those almost always
@@ -87,6 +97,10 @@ where
                 (update)(egui_ctx, &setter, &mut state.write());
             },
         );
+
+        // if request_keyboard_focus {
+        //     window.request_keyboard_focus();
+        // }
 
         self.egui_state.open.store(true, Ordering::Release);
         Box::new(EguiEditorHandle {
