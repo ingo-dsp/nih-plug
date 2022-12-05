@@ -130,7 +130,7 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
     pub updated_state_receiver: channel::Receiver<PluginState>,
 
     /// All individual param mappings encapsulated in one object.
-    pub parameter_map: ParameterMap,
+    pub parameter_map: Option<ParameterMap>,
 }
 
 pub struct ParameterMap {
@@ -336,7 +336,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             process_events: AtomicRefCell::new(Vec::with_capacity(4096)),
             updated_state_sender,
             updated_state_receiver,
-            parameter_map: ParameterMap::new::<P>(params)
+            parameter_map: Some(ParameterMap::new::<P>(params))
         };
 
         // FIXME: Right now this is safe, but if we are going to have a singleton main thread queue
@@ -370,6 +370,10 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             .map(|editor| Arc::new(Mutex::new(editor)));
 
         wrapper
+    }
+
+    pub fn parameter_map(&self) -> &ParameterMap {
+        self.parameter_map.as_ref().unwrap()
     }
 
     pub fn make_gui_context(self: Arc<Self>) -> Arc<WrapperGuiContext<P>> {
@@ -458,7 +462,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
         normalized_value: f32,
         sample_rate: Option<f32>,
     ) -> tresult {
-        match self.parameter_map.param_by_hash.get(&hash) {
+        match self.parameter_map().param_by_hash.get(&hash) {
             Some(param_ptr) => {
                 // Also update the parameter's smoothing if applicable
                 match (param_ptr, sample_rate) {
@@ -481,8 +485,8 @@ impl<P: Vst3Plugin> WrapperInner<P> {
     pub fn get_state_object(&self) -> PluginState {
         unsafe {
             state::serialize_object::<P>(
-                self.parameter_map.params.clone(),
-                state::make_params_iter(&self.parameter_map.param_by_hash, &self.parameter_map.param_id_to_hash),
+                self.parameter_map().params.clone(),
+                state::make_params_iter(&self.parameter_map().param_by_hash, &self.parameter_map().param_id_to_hash),
             )
         }
     }
@@ -526,8 +530,8 @@ impl<P: Vst3Plugin> WrapperInner<P> {
                 unsafe {
                     state::deserialize_object::<P>(
                         &mut state,
-                        self.parameter_map.params.clone(),
-                        state::make_params_getter(&self.parameter_map.param_by_hash, &self.parameter_map.param_id_to_hash),
+                        self.parameter_map().params.clone(),
+                        state::make_params_getter(&self.parameter_map().param_by_hash, &self.parameter_map().param_id_to_hash),
                         self.current_buffer_config.load().as_ref(),
                     );
                 }
