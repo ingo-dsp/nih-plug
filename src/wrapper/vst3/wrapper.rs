@@ -518,11 +518,11 @@ impl<P: Vst3Plugin> IComponent for Wrapper<P> {
             nih_debug_assert_failure!("Unexpected stream length");
             return kResultFalse;
         }
-
+        let parameter_map = self.inner.parameter_map();
         let success = state::deserialize_json::<P>(
             &read_buffer,
-            self.inner.parameter_map().params.clone(),
-            state::make_params_getter(&self.inner.parameter_map().param_by_hash, &self.inner.parameter_map().param_id_to_hash),
+            parameter_map.params.clone(),
+            state::make_params_getter(&parameter_map.param_by_hash, &parameter_map.param_id_to_hash),
             self.inner.current_buffer_config.load().as_ref(),
         );
         if !success {
@@ -556,9 +556,10 @@ impl<P: Vst3Plugin> IComponent for Wrapper<P> {
 
         let state = state.upgrade().unwrap();
 
+        let parameter_map = self.inner.parameter_map();
         let serialized = state::serialize_json::<P>(
-            self.inner.parameter_map().params.clone(),
-            state::make_params_iter(&self.inner.parameter_map().param_by_hash, &self.inner.parameter_map().param_id_to_hash),
+            parameter_map.params.clone(),
+            state::make_params_iter(&parameter_map.param_by_hash, &parameter_map.param_id_to_hash),
         );
         match serialized {
             Ok(serialized) => {
@@ -603,12 +604,7 @@ impl<P: Vst3Plugin> IEditController for Wrapper<P> {
     }
 
     unsafe fn get_parameter_count(&self) -> i32 {
-        // We need to add a whole bunch of parameters if the plugin accepts MIDI CCs
-        if P::MIDI_INPUT >= MidiConfig::MidiCCs {
-            self.inner.parameter_map().param_hashes.len() as i32 + VST3_MIDI_NUM_PARAMS as i32
-        } else {
-            self.inner.parameter_map().param_hashes.len() as i32
-        }
+        self.inner.parameter_map().get_parameter_count::<P>()
     }
 
     unsafe fn get_parameter_info(
@@ -618,7 +614,9 @@ impl<P: Vst3Plugin> IEditController for Wrapper<P> {
     ) -> tresult {
         check_null_ptr!(info);
 
-        if param_index < 0 || param_index > self.get_parameter_count() {
+        let parameter_map = self.inner.parameter_map();
+
+        if param_index < 0 || param_index >= parameter_map.get_parameter_count::<P>() {
             return kInvalidArgument;
         }
 
@@ -627,7 +625,7 @@ impl<P: Vst3Plugin> IEditController for Wrapper<P> {
 
         // If the parameter is a generated MIDI CC/channel pressure/pitch bend then it needs to be
         // handled separately
-        let num_actual_params = self.inner.parameter_map().param_hashes.len() as i32;
+        let num_actual_params = parameter_map.param_hashes.len() as i32;
         if P::MIDI_INPUT >= MidiConfig::MidiCCs && param_index >= num_actual_params {
             let midi_param_relative_idx = (param_index - num_actual_params) as u32;
             // This goes up to 130 for the 128 CCs followed by channel pressure and pitch bend
@@ -646,13 +644,16 @@ impl<P: Vst3Plugin> IEditController for Wrapper<P> {
             u16strlcpy(&mut info.short_title, &name);
             info.flags = ParameterFlags::kIsReadOnly as i32 | (1 << 4); // kIsHidden
         } else {
-            let param_hash = &self.inner.parameter_map().param_hashes[param_index as usize];
+            if parameter_map.param_hashes.get(param_index as usize).is_none() {
+                log::warn!("???")
+            }
+            let param_hash = &parameter_map.param_hashes[param_index as usize];
             let param_unit = &self
                 .inner
                 .parameter_map().param_units
                 .get_vst3_unit_id(*param_hash)
                 .expect("Inconsistent parameter data");
-            let param_ptr = &self.inner.parameter_map().param_by_hash[param_hash];
+            let param_ptr = &parameter_map.param_by_hash[param_hash];
             let default_value = param_ptr.default_normalized_value();
             let flags = param_ptr.flags();
             let automatable = !flags.contains(ParamFlags::NON_AUTOMATABLE);
@@ -1803,12 +1804,13 @@ impl<P: Vst3Plugin> IAudioProcessor for Wrapper<P> {
             //        doesn't do that
             let updated_state = permit_alloc(|| self.inner.updated_state_receiver.try_recv());
             if let Ok(mut state) = updated_state {
+                let parameter_map = self.inner.parameter_map();
                 state::deserialize_object::<P>(
                     &mut state,
-                    self.inner.parameter_map().params.clone(),
+                    parameter_map.params.clone(),
                     state::make_params_getter(
-                        &self.inner.parameter_map().param_by_hash,
-                        &self.inner.parameter_map().param_id_to_hash,
+                        &parameter_map.param_by_hash,
+                        &parameter_map.param_id_to_hash,
                     ),
                     self.inner.current_buffer_config.load().as_ref(),
                 );

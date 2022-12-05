@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use vst3_sys::base::{kInvalidArgument, kResultOk, tresult};
 use vst3_sys::vst::{IComponentHandler, RestartFlags};
-
+use super::util::VST3_MIDI_NUM_PARAMS;
 use super::context::{WrapperGuiContext, WrapperInitContext, WrapperProcessContext};
 use super::note_expressions::NoteExpressionController;
 use super::param_units::ParamUnits;
@@ -235,6 +235,16 @@ impl ParameterMap {
             param_ptr_to_hash,
         }
     }
+
+    pub fn get_parameter_count<P: Plugin>(&self) -> i32 {
+        // We need to add a whole bunch of parameters if the plugin accepts MIDI CCs
+        if P::MIDI_INPUT >= MidiConfig::MidiCCs {
+            self.param_hashes.len() as i32 + VST3_MIDI_NUM_PARAMS as i32
+        } else {
+            self.param_hashes.len() as i32
+        }
+    }
+
 }
 
 
@@ -248,6 +258,8 @@ pub enum Task<P: Plugin> {
     /// Trigger a restart with the given restart flags. This is a bit set of the flags from
     /// [`vst3_sys::vst::RestartFlags`].
     TriggerRestart(i32),
+
+    ChangeParameters(Arc<dyn Params>),
     /// Request the editor to be resized according to its current size. Right now there is no way to
     /// handle "denied resize" requests yet.
     RequestResize,
@@ -572,9 +584,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
     }
 
     pub fn notify_host_parameters_changed(&self, new_params: Arc<dyn Params>) {
-        *self.parameter_map.lock() = Arc::new(ParameterMap::new::<P>(new_params));
-        let task_posted =
-            self.schedule_gui(Task::TriggerRestart(RestartFlags::kParamTitlesChanged as i32 + RestartFlags::kParamValuesChanged as i32));
+        let task_posted = self.schedule_gui(Task::ChangeParameters(new_params));
         nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
     }
 }
@@ -587,6 +597,15 @@ impl<P: Vst3Plugin> MainThreadExecutor<Task<P>> for WrapperInner<P> {
             Task::TriggerRestart(flags) => match &*self.component_handler.borrow() {
                 Some(handler) => unsafe {
                     nih_debug_assert!(is_gui_thread);
+                    handler.restart_component(flags);
+                },
+                None => nih_debug_assert_failure!("Component handler not yet set"),
+            },
+            Task::ChangeParameters(new_params) => match &*self.component_handler.borrow() {
+                Some(handler) => unsafe {
+                    nih_debug_assert!(is_gui_thread);
+                    *self.parameter_map.lock() = Arc::new(ParameterMap::new::<P>(new_params));
+                    let flags = RestartFlags::kParamTitlesChanged as i32 + RestartFlags::kParamValuesChanged as i32;
                     handler.restart_component(flags);
                 },
                 None => nih_debug_assert_failure!("Component handler not yet set"),
