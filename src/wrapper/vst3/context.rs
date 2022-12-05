@@ -115,7 +115,7 @@ impl<P: Vst3Plugin> GuiContext for WrapperGuiContext<P> {
     // trust in the caller and assume that this is indeed the case
     unsafe fn raw_begin_set_parameter(&self, param: ParamPtr) {
         match &*self.inner.component_handler.borrow() {
-            Some(handler) => match self.inner.param_ptr_to_hash.get(&param) {
+            Some(handler) => match self.inner.parameter_map.param_ptr_to_hash.get(&param) {
                 Some(hash) => {
                     handler.begin_edit(*hash);
                 }
@@ -127,7 +127,7 @@ impl<P: Vst3Plugin> GuiContext for WrapperGuiContext<P> {
 
     unsafe fn raw_set_parameter_normalized(&self, param: ParamPtr, normalized: f32) {
         match &*self.inner.component_handler.borrow() {
-            Some(handler) => match self.inner.param_ptr_to_hash.get(&param) {
+            Some(handler) => match self.inner.parameter_map.param_ptr_to_hash.get(&param) {
                 Some(hash) => {
                     // Only update the parameters manually if the host is not processing audio. If
                     // the plugin is currently processing audio, the host will pass this change back
@@ -158,7 +158,7 @@ impl<P: Vst3Plugin> GuiContext for WrapperGuiContext<P> {
 
     unsafe fn raw_end_set_parameter(&self, param: ParamPtr) {
         match &*self.inner.component_handler.borrow() {
-            Some(handler) => match self.inner.param_ptr_to_hash.get(&param) {
+            Some(handler) => match self.inner.parameter_map.param_ptr_to_hash.get(&param) {
                 Some(hash) => {
                     handler.end_edit(*hash);
                 }

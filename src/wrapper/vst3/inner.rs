@@ -36,10 +36,6 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
     pub plugin: Mutex<P>,
     /// The plugin's background task executor closure.
     pub task_executor: Mutex<TaskExecutor<P>>,
-    /// The plugin's parameters. These are fetched once during initialization. That way the
-    /// `ParamPtr`s are guaranteed to live at least as long as this object and we can interact with
-    /// the `Params` object without having to acquire a lock on `plugin`.
-    pub params: Arc<dyn Params>,
     /// The plugin's editor, if it has one. This object does not do anything on its own, but we need
     /// to instantiate this in advance so we don't need to lock the entire [`Plugin`] object when
     /// creating an editor. Wrapped in an `AtomicRefCell` because it needs to be initialized late.
@@ -133,6 +129,15 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
     /// The receiver belonging to [`new_state_sender`][Self::new_state_sender].
     pub updated_state_receiver: channel::Receiver<PluginState>,
 
+    /// All individual param mappings encapsulated in one object.
+    pub parameter_map: ParameterMap,
+}
+
+pub struct ParameterMap {
+    /// The plugin's parameters. These are fetched once during initialization. That way the
+    /// `ParamPtr`s are guaranteed to live at least as long as this object and we can interact with
+    /// the `Params` object without having to acquire a lock on `plugin`.
+    pub params: Arc<dyn Params>,
     /// The keys from `param_map` in a stable order.
     pub param_hashes: Vec<u32>,
     /// A mapping from parameter ID hashes (obtained from the string parameter IDs) to pointers to
@@ -149,6 +154,7 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
     /// untyped).
     pub param_ptr_to_hash: HashMap<ParamPtr, u32>,
 }
+
 
 /// Tasks that can be sent from the plugin to be executed on the main thread in a non-blocking
 /// realtime-safe way (either a random thread or `IRunLoop` on Linux, the OS' message loop on
@@ -282,7 +288,6 @@ impl<P: Vst3Plugin> WrapperInner<P> {
         let wrapper = Self {
             plugin: Mutex::new(plugin),
             task_executor,
-            params,
             // Initialized later as it needs a reference to the wrapper for the async executor
             editor: AtomicRefCell::new(None),
 
@@ -317,12 +322,14 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             process_events: AtomicRefCell::new(Vec::with_capacity(4096)),
             updated_state_sender,
             updated_state_receiver,
-
-            param_hashes,
-            param_by_hash,
-            param_units,
-            param_id_to_hash,
-            param_ptr_to_hash,
+            parameter_map: ParameterMap {
+                params,
+                param_hashes,
+                param_by_hash,
+                param_units,
+                param_id_to_hash,
+                param_ptr_to_hash,
+            }
         };
 
         // FIXME: Right now this is safe, but if we are going to have a singleton main thread queue
@@ -444,7 +451,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
         normalized_value: f32,
         sample_rate: Option<f32>,
     ) -> tresult {
-        match self.param_by_hash.get(&hash) {
+        match self.parameter_map.param_by_hash.get(&hash) {
             Some(param_ptr) => {
                 // Also update the parameter's smoothing if applicable
                 match (param_ptr, sample_rate) {
@@ -467,8 +474,8 @@ impl<P: Vst3Plugin> WrapperInner<P> {
     pub fn get_state_object(&self) -> PluginState {
         unsafe {
             state::serialize_object::<P>(
-                self.params.clone(),
-                state::make_params_iter(&self.param_by_hash, &self.param_id_to_hash),
+                self.parameter_map.params.clone(),
+                state::make_params_iter(&self.parameter_map.param_by_hash, &self.parameter_map.param_id_to_hash),
             )
         }
     }
@@ -512,8 +519,8 @@ impl<P: Vst3Plugin> WrapperInner<P> {
                 unsafe {
                     state::deserialize_object::<P>(
                         &mut state,
-                        self.params.clone(),
-                        state::make_params_getter(&self.param_by_hash, &self.param_id_to_hash),
+                        self.parameter_map.params.clone(),
+                        state::make_params_getter(&self.parameter_map.param_by_hash, &self.parameter_map.param_id_to_hash),
                         self.current_buffer_config.load().as_ref(),
                     );
                 }
