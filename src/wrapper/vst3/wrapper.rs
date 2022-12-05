@@ -644,9 +644,6 @@ impl<P: Vst3Plugin> IEditController for Wrapper<P> {
             u16strlcpy(&mut info.short_title, &name);
             info.flags = ParameterFlags::kIsReadOnly as i32 | (1 << 4); // kIsHidden
         } else {
-            if parameter_map.param_hashes.get(param_index as usize).is_none() {
-                log::warn!("???")
-            }
             let param_hash = &parameter_map.param_hashes[param_index as usize];
             let param_unit = &self
                 .inner
