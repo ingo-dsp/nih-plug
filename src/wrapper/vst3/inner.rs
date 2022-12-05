@@ -154,68 +154,8 @@ pub struct ParameterMap {
     /// untyped).
     pub param_ptr_to_hash: HashMap<ParamPtr, u32>,
 }
-
-
-/// Tasks that can be sent from the plugin to be executed on the main thread in a non-blocking
-/// realtime-safe way (either a random thread or `IRunLoop` on Linux, the OS' message loop on
-/// Windows and macOS).
-#[allow(clippy::enum_variant_names)]
-pub enum Task<P: Plugin> {
-    /// Execute one of the plugin's background tasks.
-    PluginTask(P::BackgroundTask),
-    /// Trigger a restart with the given restart flags. This is a bit set of the flags from
-    /// [`vst3_sys::vst::RestartFlags`].
-    TriggerRestart(i32),
-    /// Request the editor to be resized according to its current size. Right now there is no way to
-    /// handle "denied resize" requests yet.
-    RequestResize,
-}
-
-/// VST3 makes audio processing pretty complicated. In order to support both block splitting for
-/// sample accurate automation and MIDI CC handling through parameters we need to put all parameter
-/// changes and (translated) note events into a sorted array first.
-#[derive(Debug, PartialEq)]
-pub enum ProcessEvent {
-    /// An incoming parameter change sent by the host. This will only be used when sample accurate
-    /// automation has been enabled, and the parameters are only updated when we process this
-    /// spooled event at the start of a block.
-    ParameterChange {
-        /// The event's sample offset within the buffer. Used for sorting.
-        timing: u32,
-        /// The parameter's hash, as used everywhere else.
-        hash: u32,
-        /// The normalized values, as provided by the host.
-        normalized_value: f32,
-    },
-    /// An incoming parameter change sent by the host. This will only be used when sample accurate
-    /// automation has been enabled, and the parameters are only updated when we process this
-    /// spooled event at the start of a block.
-    NoteEvent {
-        /// The event's sample offset within the buffer. Used for sorting. The timing stored within
-        /// the note event needs to have the block start index subtraced from it.
-        timing: u32,
-        /// The actual note event, make sure to subtract the block start index with
-        /// [`NoteEvent::subtract_timing()`] before putting this into the input event queue.
-        event: NoteEvent,
-    },
-}
-
-impl<P: Vst3Plugin> WrapperInner<P> {
-    #[allow(unused_unsafe)]
-    pub fn new() -> Arc<Self> {
-        let plugin = P::default();
-        let task_executor = Mutex::new(plugin.task_executor());
-
-        // This is used to allow the plugin to restore preset data from its editor, see the comment
-        // on `Self::updated_state_sender`
-        let (updated_state_sender, updated_state_receiver) = channel::bounded(0);
-
-        // This is a mapping from the parameter IDs specified by the plugin to pointers to those
-        // parameters. These pointers are assumed to be safe to dereference as long as
-        // `wrapper.plugin` is alive. The plugin API identifiers these parameters by hashes, which
-        // we'll calculate from the string ID specified by the plugin. These parameters should also
-        // remain in the same order as the one returned by the plugin.
-        let params = plugin.params();
+impl ParameterMap {
+    pub fn new<P: Plugin>(params: Arc<dyn Params>) -> Self {
         let param_id_hashes_ptrs_groups: Vec<_> = params
             .param_map()
             .into_iter()
@@ -285,6 +225,80 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             .map(|(_, hash, ptr, _)| (ptr, hash))
             .collect();
 
+        ParameterMap {
+            params,
+            param_hashes,
+            param_by_hash,
+            param_units,
+            param_id_to_hash,
+            param_ptr_to_hash,
+        }
+    }
+}
+
+
+/// Tasks that can be sent from the plugin to be executed on the main thread in a non-blocking
+/// realtime-safe way (either a random thread or `IRunLoop` on Linux, the OS' message loop on
+/// Windows and macOS).
+#[allow(clippy::enum_variant_names)]
+pub enum Task<P: Plugin> {
+    /// Execute one of the plugin's background tasks.
+    PluginTask(P::BackgroundTask),
+    /// Trigger a restart with the given restart flags. This is a bit set of the flags from
+    /// [`vst3_sys::vst::RestartFlags`].
+    TriggerRestart(i32),
+    /// Request the editor to be resized according to its current size. Right now there is no way to
+    /// handle "denied resize" requests yet.
+    RequestResize,
+}
+
+/// VST3 makes audio processing pretty complicated. In order to support both block splitting for
+/// sample accurate automation and MIDI CC handling through parameters we need to put all parameter
+/// changes and (translated) note events into a sorted array first.
+#[derive(Debug, PartialEq)]
+pub enum ProcessEvent {
+    /// An incoming parameter change sent by the host. This will only be used when sample accurate
+    /// automation has been enabled, and the parameters are only updated when we process this
+    /// spooled event at the start of a block.
+    ParameterChange {
+        /// The event's sample offset within the buffer. Used for sorting.
+        timing: u32,
+        /// The parameter's hash, as used everywhere else.
+        hash: u32,
+        /// The normalized values, as provided by the host.
+        normalized_value: f32,
+    },
+    /// An incoming parameter change sent by the host. This will only be used when sample accurate
+    /// automation has been enabled, and the parameters are only updated when we process this
+    /// spooled event at the start of a block.
+    NoteEvent {
+        /// The event's sample offset within the buffer. Used for sorting. The timing stored within
+        /// the note event needs to have the block start index subtraced from it.
+        timing: u32,
+        /// The actual note event, make sure to subtract the block start index with
+        /// [`NoteEvent::subtract_timing()`] before putting this into the input event queue.
+        event: NoteEvent,
+    },
+}
+
+impl<P: Vst3Plugin> WrapperInner<P> {
+    #[allow(unused_unsafe)]
+    pub fn new() -> Arc<Self> {
+        let plugin = P::default();
+        let task_executor = Mutex::new(plugin.task_executor());
+
+        // This is used to allow the plugin to restore preset data from its editor, see the comment
+        // on `Self::updated_state_sender`
+        let (updated_state_sender, updated_state_receiver) = channel::bounded(0);
+
+        // This is a mapping from the parameter IDs specified by the plugin to pointers to those
+        // parameters. These pointers are assumed to be safe to dereference as long as
+        // `wrapper.plugin` is alive. The plugin API identifiers these parameters by hashes, which
+        // we'll calculate from the string ID specified by the plugin. These parameters should also
+        // remain in the same order as the one returned by the plugin.
+        let params = plugin.params();
+
+
         let wrapper = Self {
             plugin: Mutex::new(plugin),
             task_executor,
@@ -322,14 +336,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             process_events: AtomicRefCell::new(Vec::with_capacity(4096)),
             updated_state_sender,
             updated_state_receiver,
-            parameter_map: ParameterMap {
-                params,
-                param_hashes,
-                param_by_hash,
-                param_units,
-                param_id_to_hash,
-                param_ptr_to_hash,
-            }
+            parameter_map: ParameterMap::new::<P>(params)
         };
 
         // FIXME: Right now this is safe, but if we are going to have a singleton main thread queue
