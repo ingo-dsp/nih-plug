@@ -96,6 +96,10 @@ pub trait ProcessContext<P: Plugin> {
     //       change to a queue (or directly to the VST3 plugin's parameter output queues) instead of
     //       using main thread host automation (and all the locks involved there).
     // fn set_parameter<P: Param>(&self, param: &P, value: P::Plain);
+
+    // Notify the host that the names, range-definitions, values etc. of the parameters changed.
+    // The host will call [`Plugin::params()`] again to get the new parameter definitions.
+    fn notify_host_parameters_changed(&self);
 }
 
 /// Information about the plugin's transport. Depending on the plugin API and the host not all

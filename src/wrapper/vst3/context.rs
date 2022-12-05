@@ -91,6 +91,10 @@ impl<P: Vst3Plugin> ProcessContext<P> for WrapperProcessContext<'_, P> {
     fn set_current_voice_capacity(&self, _capacity: u32) {
         // This is only supported by CLAP
     }
+
+    fn notify_host_parameters_changed(&self) {
+        self.inner.notify_host_parameters_changed();
+    }
 }
 
 impl<P: Vst3Plugin> GuiContext for WrapperGuiContext<P> {

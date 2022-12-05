@@ -89,6 +89,10 @@ impl<P: ClapPlugin> ProcessContext<P> for WrapperProcessContext<'_, P> {
     fn set_current_voice_capacity(&self, capacity: u32) {
         self.wrapper.set_current_voice_capacity(capacity)
     }
+
+    fn notify_host_parameters_changed(&self) {
+        self.wrapper.notify_host_parameters_changed()
+    }
 }
 
 impl<P: ClapPlugin> GuiContext for WrapperGuiContext<P> {

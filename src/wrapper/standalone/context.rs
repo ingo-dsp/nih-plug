@@ -105,6 +105,10 @@ impl<P: Plugin, B: Backend> ProcessContext<P> for WrapperProcessContext<'_, P, B
     fn set_current_voice_capacity(&self, _capacity: u32) {
         // This is only supported by CLAP
     }
+
+    fn notify_host_parameters_changed(&self) {
+        // Nothing to do in standalone, as there is no host to talk to.
+    }
 }
 
 impl<P: Plugin, B: Backend> GuiContext for WrapperGuiContext<P, B> {

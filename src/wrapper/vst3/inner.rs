@@ -551,6 +551,12 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
         }
     }
+
+    pub fn notify_host_parameters_changed(&self) {
+        let task_posted =
+            self.schedule_gui(Task::TriggerRestart(RestartFlags::kParamTitlesChanged as i32 + RestartFlags::kParamValuesChanged as i32));
+        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
+    }
 }
 
 impl<P: Vst3Plugin> MainThreadExecutor<Task<P>> for WrapperInner<P> {

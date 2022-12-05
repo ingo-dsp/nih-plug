@@ -38,7 +38,7 @@ use clap_sys::ext::params::{
     clap_host_params, clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS,
     CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_BYPASS, CLAP_PARAM_IS_HIDDEN,
     CLAP_PARAM_IS_MODULATABLE, CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID, CLAP_PARAM_IS_READONLY,
-    CLAP_PARAM_IS_STEPPED, CLAP_PARAM_RESCAN_VALUES,
+    CLAP_PARAM_IS_STEPPED, CLAP_PARAM_RESCAN_VALUES, CLAP_PARAM_RESCAN_ALL,
 };
 use clap_sys::ext::render::{
     clap_plugin_render, clap_plugin_render_mode, CLAP_EXT_RENDER, CLAP_RENDER_OFFLINE,
@@ -282,6 +282,8 @@ pub enum Task<P: Plugin> {
     VoiceInfoChanged,
     /// Tell the host that it should rescan the current parameter values.
     RescanParamValues,
+    /// Tell the host that it should rescan the current parameter definitions and values.
+    RescanParams,
 }
 
 /// The types of CLAP parameter updates for events.
@@ -392,6 +394,13 @@ impl<P: ClapPlugin> MainThreadExecutor<Task<P>> for Wrapper<P> {
                 Some(host_params) => {
                     nih_debug_assert!(is_gui_thread);
                     unsafe_clap_call! { host_params=>rescan(&*self.host_callback, CLAP_PARAM_RESCAN_VALUES) };
+                }
+                None => nih_debug_assert_failure!("The host does not support parameters? What?"),
+            },
+            Task::RescanParams => match &*self.host_params.borrow() {
+                Some(host_params) => {
+                    nih_debug_assert!(is_gui_thread);
+                    unsafe_clap_call! { host_params=>rescan(&*self.host_callback, CLAP_PARAM_RESCAN_ALL) };
                 }
                 None => nih_debug_assert_failure!("The host does not support parameters? What?"),
             },
@@ -1715,6 +1724,11 @@ impl<P: ClapPlugin> Wrapper<P> {
                  'ClapPlugin::CLAP_POLY_MODULATION_CONFIG' is set"
             ),
         }
+    }
+
+    pub fn notify_host_parameters_changed(&self) {
+        let task_posted = self.schedule_gui(Task::RescanParams);
+        nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
     }
 
     unsafe extern "C" fn init(plugin: *const clap_plugin) -> bool {
