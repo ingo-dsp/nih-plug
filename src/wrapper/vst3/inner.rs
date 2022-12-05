@@ -130,7 +130,7 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
     pub updated_state_receiver: channel::Receiver<PluginState>,
 
     /// All individual param mappings encapsulated in one object.
-    pub parameter_map: Option<ParameterMap>,
+    pub parameter_map: Mutex<Option<Arc<ParameterMap>>>,
 }
 
 pub struct ParameterMap {
@@ -336,7 +336,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             process_events: AtomicRefCell::new(Vec::with_capacity(4096)),
             updated_state_sender,
             updated_state_receiver,
-            parameter_map: Some(ParameterMap::new::<P>(params))
+            parameter_map: Mutex::new(Some(Arc::new(ParameterMap::new::<P>(params))))
         };
 
         // FIXME: Right now this is safe, but if we are going to have a singleton main thread queue
@@ -372,8 +372,8 @@ impl<P: Vst3Plugin> WrapperInner<P> {
         wrapper
     }
 
-    pub fn parameter_map(&self) -> &ParameterMap {
-        self.parameter_map.as_ref().unwrap()
+    pub fn parameter_map(&self) -> Arc<ParameterMap> {
+        self.parameter_map.lock().as_ref().unwrap().clone()
     }
 
     pub fn make_gui_context(self: Arc<Self>) -> Arc<WrapperGuiContext<P>> {
