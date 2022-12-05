@@ -12,6 +12,7 @@ use crate::context::PluginApi;
 use crate::midi::NoteEvent;
 use crate::params::internals::ParamPtr;
 use crate::plugin::Vst3Plugin;
+use crate::prelude::Params;
 use crate::wrapper::state::PluginState;
 
 /// A [`InitContext`] implementation for the wrapper. This is a separate object so it can hold on to
@@ -92,8 +93,8 @@ impl<P: Vst3Plugin> ProcessContext<P> for WrapperProcessContext<'_, P> {
         // This is only supported by CLAP
     }
 
-    fn notify_host_parameters_changed(&self) {
-        self.inner.notify_host_parameters_changed();
+    fn notify_host_parameters_changed(&self, new_params: Arc<dyn Params>) {
+        self.inner.notify_host_parameters_changed(new_params);
     }
 }
 

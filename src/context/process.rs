@@ -1,8 +1,11 @@
 //! A context passed during the process function.
 
+use std::sync::Arc;
+
 use super::PluginApi;
 use crate::midi::NoteEvent;
 use crate::plugin::Plugin;
+use crate::prelude::Params;
 
 /// Contains both context data and callbacks the plugin can use during processing. Most notably this
 /// is how a plugin sends and receives note events, gets transport information, and accesses
@@ -98,8 +101,7 @@ pub trait ProcessContext<P: Plugin> {
     // fn set_parameter<P: Param>(&self, param: &P, value: P::Plain);
 
     // Notify the host that the names, range-definitions, values etc. of the parameters changed.
-    // The host will call [`Plugin::params()`] again to get the new parameter definitions.
-    fn notify_host_parameters_changed(&self);
+    fn notify_host_parameters_changed(&self, new_params: Arc<dyn Params>);
 }
 
 /// Information about the plugin's transport. Depending on the plugin API and the host not all

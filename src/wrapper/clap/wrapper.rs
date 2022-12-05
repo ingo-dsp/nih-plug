@@ -1726,7 +1726,7 @@ impl<P: ClapPlugin> Wrapper<P> {
         }
     }
 
-    pub fn notify_host_parameters_changed(&self) {
+    pub fn notify_host_parameters_changed(&self, _new_params: Arc<dyn Params>) {
         let task_posted = self.schedule_gui(Task::RescanParams);
         nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
     }

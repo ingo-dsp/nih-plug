@@ -10,6 +10,7 @@ use crate::context::PluginApi;
 use crate::event_loop::EventLoop;
 use crate::midi::NoteEvent;
 use crate::params::internals::ParamPtr;
+use crate::params::Params;
 use crate::plugin::ClapPlugin;
 
 /// A [`InitContext`] implementation for the wrapper. This is a separate object so it can hold on
@@ -90,8 +91,8 @@ impl<P: ClapPlugin> ProcessContext<P> for WrapperProcessContext<'_, P> {
         self.wrapper.set_current_voice_capacity(capacity)
     }
 
-    fn notify_host_parameters_changed(&self) {
-        self.wrapper.notify_host_parameters_changed()
+    fn notify_host_parameters_changed(&self, new_params: Arc<dyn Params>) {
+        self.wrapper.notify_host_parameters_changed(new_params)
     }
 }
 

@@ -1,3 +1,4 @@
+use std::borrow::BorrowMut;
 use atomic_refcell::AtomicRefCell;
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::{self, SendTimeoutError};
@@ -130,7 +131,7 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
     pub updated_state_receiver: channel::Receiver<PluginState>,
 
     /// All individual param mappings encapsulated in one object.
-    pub parameter_map: Mutex<Option<Arc<ParameterMap>>>,
+    pub parameter_map: Mutex<Arc<ParameterMap>>,
 }
 
 pub struct ParameterMap {
@@ -336,7 +337,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             process_events: AtomicRefCell::new(Vec::with_capacity(4096)),
             updated_state_sender,
             updated_state_receiver,
-            parameter_map: Mutex::new(Some(Arc::new(ParameterMap::new::<P>(params))))
+            parameter_map: Mutex::new(Arc::new(ParameterMap::new::<P>(params)))
         };
 
         // FIXME: Right now this is safe, but if we are going to have a singleton main thread queue
@@ -373,7 +374,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
     }
 
     pub fn parameter_map(&self) -> Arc<ParameterMap> {
-        self.parameter_map.lock().as_ref().unwrap().clone()
+        Arc::clone(&self.parameter_map.lock())
     }
 
     pub fn make_gui_context(self: Arc<Self>) -> Arc<WrapperGuiContext<P>> {
@@ -570,7 +571,8 @@ impl<P: Vst3Plugin> WrapperInner<P> {
         }
     }
 
-    pub fn notify_host_parameters_changed(&self) {
+    pub fn notify_host_parameters_changed(&self, new_params: Arc<dyn Params>) {
+        *self.parameter_map.lock() = Arc::new(ParameterMap::new::<P>(new_params));
         let task_posted =
             self.schedule_gui(Task::TriggerRestart(RestartFlags::kParamTitlesChanged as i32 + RestartFlags::kParamValuesChanged as i32));
         nih_debug_assert!(task_posted, "The task queue is full, dropping task...");

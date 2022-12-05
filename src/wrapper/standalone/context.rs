@@ -10,6 +10,7 @@ use crate::context::PluginApi;
 use crate::event_loop::EventLoop;
 use crate::midi::NoteEvent;
 use crate::params::internals::ParamPtr;
+use crate::params::Params;
 use crate::plugin::Plugin;
 
 /// A [`InitContext`] implementation for the standalone wrapper. This is a separate object so it
@@ -106,7 +107,7 @@ impl<P: Plugin, B: Backend> ProcessContext<P> for WrapperProcessContext<'_, P, B
         // This is only supported by CLAP
     }
 
-    fn notify_host_parameters_changed(&self) {
+    fn notify_host_parameters_changed(&self, _new_params: Arc<dyn Params>) {
         // Nothing to do in standalone, as there is no host to talk to.
     }
 }
