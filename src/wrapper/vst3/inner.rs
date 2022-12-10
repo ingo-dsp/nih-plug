@@ -605,7 +605,7 @@ impl<P: Vst3Plugin> MainThreadExecutor<Task<P>> for WrapperInner<P> {
                 Some(handler) => unsafe {
                     nih_debug_assert!(is_gui_thread);
                     *self.parameter_map.lock() = Arc::new(ParameterMap::new::<P>(new_params));
-                    let flags = RestartFlags::kParamTitlesChanged as i32 + RestartFlags::kParamValuesChanged as i32;
+                    let flags = RestartFlags::kParamTitlesChanged as i32;// + RestartFlags::kParamValuesChanged as i32;
                     handler.restart_component(flags);
                 },
                 None => nih_debug_assert_failure!("Component handler not yet set"),
