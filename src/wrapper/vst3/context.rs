@@ -137,7 +137,11 @@ impl<P: Vst3Plugin> GuiContext for WrapperGuiContext<P> {
                     // FIXME: So this doesn't work for REAPER, because they just silently stop
                     //        processing audio when you bypass the plugin. Great. We can add a time
                     //        based heuristic to work around this in the meantime.
-                    if !self.inner.is_processing.load(Ordering::SeqCst) {
+                    
+                    // INGO: Always running this update code is not harmful for us,
+                    //       because our process() method samples the parameter values right at the top.
+                    //       Also, without this update code, cubase does not update values.
+                    //if !self.inner.is_processing.load(Ordering::SeqCst) {
                         self.inner.set_normalized_value_by_hash(
                             *hash,
                             normalized,
@@ -147,7 +151,7 @@ impl<P: Vst3Plugin> GuiContext for WrapperGuiContext<P> {
                                 .map(|c| c.sample_rate),
                         );
                         self.inner.notify_param_values_changed();
-                    }
+                    //}
 
                     handler.perform_edit(*hash, normalized as f64);
                 }
